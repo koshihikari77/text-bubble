@@ -32,6 +32,13 @@ FONT_CANDIDATES = [
 # The LLM-provided anchor remains the text block's top-right corner.
 BUBBLE_INNER_WIDTH_RATIO = 0.62
 BUBBLE_INNER_HEIGHT_RATIO = 0.72
+TEXT_COLUMN_GAP_RATIO = 0.1
+DEFAULT_FONT_DIVISOR = 38
+BUBBLE_FILL_OPACITY = 0.88
+BUBBLE_FILL_ALPHA_PNG = 232
+BUBBLE_STROKE_COLOR = "#111111"
+TEXT_COLOR = "#111111"
+TEXT_SHADOW = "none"
 
 
 SYSTEM_PROMPT = """You are a manga vertical speech-bubble planner.
@@ -234,9 +241,9 @@ def summarize_raw_output(raw_message: str) -> str:
 
 def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
     em = max(font_size, 24)
-    char_step = max(30, int(round(em * 1.25)))
+    char_step = max(24, int(round(em * 1.08)))
     column_width = max(26, int(round(em * 1.0)))
-    column_gap = max(6, int(round(em * 0.28)))
+    column_gap = max(4, int(round(em * TEXT_COLUMN_GAP_RATIO)))
     block_width = column_width * len(columns) + column_gap * max(0, len(columns) - 1)
     block_height = char_step * max(len(column) for column in columns)
     return {
@@ -308,13 +315,13 @@ def compute_bubble_layout(
     em = max(font_size, 24)
 
     bubble_width = max(
-        text_width + max(44, int(round(em * 1.9))),
-        int(round(text_width / BUBBLE_INNER_WIDTH_RATIO)),
+        text_width + max(64, int(round(em * 2.5))),
+        int(round(text_width / 0.48)),
     )
     bubble_height = max(
-        text_height + max(56, int(round(em * 2.2))),
-        int(round(text_height / BUBBLE_INNER_HEIGHT_RATIO)),
-        int(round(bubble_width * 1.68)),
+        text_height + max(38, int(round(em * 1.35))),
+        int(round(text_height / 0.79)),
+        int(round(bubble_width * 1.32)),
     )
 
     horizontal_slack = max(0, bubble_width - text_width)
@@ -401,6 +408,7 @@ def resolve_bubble_asset(explicit: str | None) -> Path | None:
         candidates.append(Path(explicit))
     candidates.extend(
         [
+            Path(__file__).resolve().parent / "assets" / "bubble_ellipse.svg",
             Path("/notebooks/imgs/bubble.svg"),
             Path("/notebooks/imgs/bubble.png"),
             Path("/notebooks/resources/bubble.svg"),
@@ -457,7 +465,7 @@ def bubble_png_to_rgba(asset_path: Path) -> Image.Image:
             if value < outline_cutoff:
                 out[x, y] = (0, 0, 0, 255)
             elif not outside[y][x]:
-                out[x, y] = (255, 255, 255, 244)
+                out[x, y] = (255, 255, 255, BUBBLE_FILL_ALPHA_PNG)
             else:
                 out[x, y] = (0, 0, 0, 0)
 
@@ -493,6 +501,13 @@ html, body {{
   display: block;
   width: 100%;
   height: 100%;
+}}
+#asset :root {{
+  --stroke: {BUBBLE_STROKE_COLOR};
+}}
+#asset .bubble {{
+  fill-opacity: {BUBBLE_FILL_OPACITY} !important;
+  stroke: {BUBBLE_STROKE_COLOR} !important;
 }}
 </style>
 </head>
@@ -580,9 +595,10 @@ html, body {{
   font-family: {font_stack};
   font-size: {text_layout["font_size"]}px;
   font-weight: 500;
-  color: #111;
+  color: {TEXT_COLOR};
   letter-spacing: 0;
   text-align: start;
+  text-shadow: {TEXT_SHADOW};
 }}
 </style>
 </head>
@@ -789,7 +805,7 @@ def render_bubble(
     image = Image.open(image_path)
     width_px, height_px = image.size
     image.close()
-    actual_font_size = font_size or max(26, min(52, height_px // 28))
+    actual_font_size = font_size or max(22, min(48, height_px // DEFAULT_FONT_DIVISOR))
     text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
     text_overlay = render_text_overlay(
         renderer=text_renderer,
