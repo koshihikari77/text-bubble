@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local environments
+.venv/
+.playwright-browsers/
+
+# Large third-party sources
+llama.cpp/
+
+# Local model artifacts
+models/
+
+# Generated outputs
+out/
+smoke_test.png
+
+# OS/editor noise
+.DS_Store
