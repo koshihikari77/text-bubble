@@ -1,183 +1,161 @@
-# bubble_pipeline.py
+# Bubble Pipeline
 
-[`bubble_pipeline.py`](/storage/projects/text-bubble/bubble_pipeline.py) の現状仕様の整理です。
+現状の吹き出し生成まわりの整理です。対象は [`bubble_pipeline.py`](/storage/projects/text-bubble/bubble_pipeline.py) と、その前後に分けた CLI です。
 
-## 役割
+## 構成
 
-このスクリプトは次の 2 段をつなぐ。
+- 推論と描画をまとめて行う: [`bubble_pipeline.py`](/storage/projects/text-bubble/bubble_pipeline.py)
+- 推論だけ行う: [`bubble_infer.py`](/storage/projects/text-bubble/bubble_infer.py)
+- 描画だけ行う: [`bubble_render.py`](/storage/projects/text-bubble/bubble_render.py)
 
-1. `Heretic` に画像を見せて、吹き出し用の縦書きテキストブロック計画を JSON で返させる
-2. 返ってきた計画を使って、吹き出し素材と縦書き文字を画像に合成する
+普段の責務分担はこうです。
 
-## モデルにやらせていること
+1. `Heretic` に画像とセリフ行を渡して `plan JSON` を作る
+2. `plan JSON` と元画像から吹き出しを描画する
 
-モデル出力は 1 個の吹き出しだけ。
+## Plan JSON
 
-返す JSON:
+現在の plan は複数吹き出し対応です。
 
 ```json
 {
-  "anchor_x": 0.9,
-  "anchor_y": 0.1,
-  "columns": ["夜見の", "どこみてる", "のー？"]
+  "dialogue_lines": [
+    "夜見のどこみてるのー？"
+  ],
+  "bubbles": [
+    {
+      "anchor_x": 0.9,
+      "anchor_y": 0.1,
+      "sentence_ids": [1],
+      "columns": ["夜見の", "どこみて", "るのー？"]
+    }
+  ]
 }
 ```
 
 意味:
 
-- `anchor_x`
-  画像全体に対する正規化座標。縦書きテキストブロックの右上 x。
-- `anchor_y`
-  画像全体に対する正規化座標。縦書きテキストブロックの右上 y。
+- `anchor_x`, `anchor_y`
+  画像全体に対する正規化座標。縦書きテキストブロックの右上。
+- `sentence_ids`
+  どの入力文をその吹き出しに入れるか。1-based。
 - `columns`
   右から左に並ぶ縦書き列。
 
-前提:
+検証ルール:
 
-- セリフ本文は `--dialogue` でコード側から与える
-- モデルはセリフを改変してはいけない
-- `"".join(columns)` が `--dialogue` と完全一致しない場合は失敗
+- `sentence_ids` は元の文順を保つ
+- すべての文はちょうど一度だけ使う
+- `columns` を連結した文字列は、その吹き出しに割り当てた文と完全一致する
 
-## モデルにやらせていないこと
+## モデルにやらせること
 
-モデルには次はやらせていない。
+`Heretic` にやらせているのは次だけです。
 
-- 吹き出しのしっぽ
-- 吹き出し outline の形状生成
-- pixel 単位の矩形生成
-- 文字の最終描画座標
+- 吹き出しごとの `anchor_x`, `anchor_y`
+- 文のまとめ方
+- その文をどう `columns` に分けるか
+
+モデルにやらせていないもの:
+
+- 吹き出しの形
+- 吹き出しの最終サイズ
 - フォント選択
+- 文字の最終描画座標
+- しっぽ
 
-これらはすべてコード側が処理する。
+## 文字描画
 
-## 入力
+描画 backend は 2 系統あります。
 
-主要引数:
+- `browser`
+- `pango`
 
-- `--input`
-- `--output`
-- `--plan-json`
-- `--server`
-- `--model`
-- `--dialogue`
-- `--font`
-- `--font-family`
-- `--bubble-asset`
-- `--font-size`
-- `--temperature`
+現状の本命は `browser` です。`Playwright + Chromium` で縦書き文字を描画し、その alpha bbox を取得します。
 
-例:
+重要なのは、最終的な文字の見た目位置は renderer が決めていて、bubble 計算にはその `alpha bbox` を使うことです。固定の仮想 bbox だけで bubble を決めないようにしています。
 
-```bash
-./.venv/bin/python bubble_pipeline.py \
-  --input /notebooks/imgs/00005716.png \
-  --output /notebooks/imgs/00005716_bubbled.png \
-  --plan-json /notebooks/imgs/00005716_plan.json \
-  --dialogue "夜見のどこみてるのー？" \
-  --font /notebooks/resources/JKG-L_3.ttf \
-  --bubble-asset /notebooks/resources/bubble.svg
-```
+## 吹き出し描画
 
-## 生成フロー
-
-流れはこの順。
-
-1. 入力画像を data URL 化
-2. `llama-server` の `/chat/completions` に送信
-3. `json_schema` で `anchor_x`, `anchor_y`, `columns` を要求
-4. 返却 JSON を検証
-5. テキストブロックの寸法を計算
-6. 吹き出し素材をレンダリング
-7. 縦書き文字をレンダリング
-8. 元画像に合成して保存
-
-## レイアウト計算
-
-縦書き文字組はコード側で計算する。
-
-主な考え方:
-
-- 列順は `columns[0]` が最右列
-- 列頭は同じ `anchor_y` で揃える
-- 文字は固定セルベースで積む
-- 吹き出しは文字ブロックを包むように作る
-
-現状の主要パラメータ:
-
-- `char_step = round(em * 1.25)`
-- `column_width = round(em * 1.0)`
-- `column_gap = round(em * 0.28)`
-- `pad_left = round(em * 1.0)`
-- `pad_right = round(em * 1.0)`
-- `pad_top = round(em * 0.9)`
-- `pad_bottom = round(em * 1.1)`
-
-さらに吹き出しは縦長になるよう、最低でも `height >= width * 1.6` を満たすように補正する。
-
-## 描画方式
-
-描画は `Pillow` 単体ではなく `SVG + Playwright/Chromium` を使う。
-
-理由:
-
-- 日本語縦書きの文字描画をブラウザに寄せたかった
-- 吹き出し素材として `bubble.svg` をそのまま使いたかった
-- 透明背景合成が必要だった
-
-描画対象は 2 レイヤー:
-
-1. 吹き出し素材
-2. 縦書きテキスト
-
-その後に元画像へ `alpha_composite` で重ねる。
-
-## 吹き出し素材の対応
-
-現状対応しているのは次の 3 種類。
+吹き出し素材は次の形式を扱えます。
 
 - PNG
 - SVG
-- `.txt` に保存された SVG 文字列
+- SVG コードを保存した `.txt`
 
 探索順:
 
 - 明示された `--bubble-asset`
+- [`assets/bubble_ellipse.svg`](/storage/projects/text-bubble/assets/bubble_ellipse.svg)
 - `/notebooks/imgs/bubble.svg`
 - `/notebooks/imgs/bubble.png`
 - `/notebooks/resources/bubble.svg`
 - `/notebooks/resources/bubble.png`
 - `/notebooks/resources/bubble_svg.txt`
 
-## フォント
+現在の考え方はこうです。
 
-フォントは `@font-face` で data URL 埋め込みにしてブラウザへ渡す。
+1. 実際に描いた文字の `alpha bbox` を取る
+2. 必要ならその矩形に padding を足す
+3. その矩形の aspect ratio に合わせて素材 SVG を warp する
+4. warp 後の SVG を中心合わせで合成する
 
-現状の主用途:
+つまり、bubble の shape は素材 SVG を毎回比率変換して作っています。別の shape を毎回生成しているわけではありません。
 
-- [JKG-L_3.ttf](/notebooks/resources/JKG-L_3.ttf)
+## 現在のレイアウト計算
 
-フォント未指定時はシステム側の候補を順に探す。
+文字組の基本値は `font_size` 由来です。
 
-## Playwright 周りの注意
+- `char_step = em * 1.08` 相当
+- `column_width = em * 1.0` 相当
+- `column_gap = em * 0.1` 相当
 
-重要な実装メモ:
+bubble 側は、実際の文字 bbox の周囲に余白を足して target 矩形を決めます。現在の余白係数は [`bubble_pipeline.py`](/storage/projects/text-bubble/bubble_pipeline.py) を参照してください。
 
-- `headless_shell` では HTML テキストが消えた
-- そのため通常の Chromium 実行ファイルを優先している
-- Chromium 実行には `libcairo2`, `libpango-*`, `libfontconfig1`, `libharfbuzz0b` が必要だった
+## SVG 比率変換
 
-## 現状の制約
+SVG 素材を target ratio に合わせる処理は [`warp_svg_source_to_aspect()`](/storage/projects/text-bubble/bubble_pipeline.py) にあります。
 
-いまの `bubble_pipeline.py` はまだ最小版で、制約も多い。
+この関数は、
 
-- 吹き出しは 1 個だけ
-- セリフ本文は固定で外から与える
-- モデルは自己評価ループを回していない
-- 文字詰め、約物、縦中横などの日本語組版は未調整
-- 吹き出し素材の形に合わせた padding 最適化も未調整
+- 元 SVG の `viewBox` を読む
+- target aspect に応じて `scale(x, y)` を決める
+- 中心を保ったまま `<g transform="...">` を追加する
 
-## 直近の次候補
+という形で動きます。
 
-- 吹き出し素材の形に合わせて文字ブロック余白を再調整
-- `ー`, `？`, `！`, `…` などの縦書き見た目を改善
-- 複数候補を生成して `Heretic` に評価させるループを追加
+この処理のおかげで、素材 SVG を 1 個持っておけば、縦長にも正方形寄りにもその場で変形できます。
+
+## 実験スクリプト
+
+形状の切り分け用に実験スクリプトもあります。
+
+- SVG そのものを別比率に warp する:
+  [`warp_bubble_svg.py`](/storage/projects/text-bubble/scripts/warp_bubble_svg.py)
+- 既存 plan で正方形 bubble を試す:
+  [`render_square_bubble_experiment.py`](/storage/projects/text-bubble/scripts/render_square_bubble_experiment.py)
+
+これは本線の描画ロジックとは別で、素材や比率の切り分け用です。
+
+## 実行例
+
+推論:
+
+```bash
+./.venv/bin/python bubble_infer.py \
+  --input /notebooks/imgs/00005716.png \
+  --plan-json /notebooks/imgs/00005716_separate_plan.json \
+  --dialogue "夜見のどこみてるのー？"
+```
+
+描画:
+
+```bash
+./.venv/bin/python bubble_render.py \
+  --input /notebooks/imgs/00005716.png \
+  --plan-json /notebooks/imgs/00005716_separate_plan.json \
+  --output /notebooks/imgs/00005716_bubbled.png \
+  --font /notebooks/resources/JKG-L_3.ttf \
+  --bubble-asset /storage/projects/text-bubble/assets/bubble_ellipse.svg \
+  --text-renderer browser
+```

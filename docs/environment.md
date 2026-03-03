@@ -30,6 +30,7 @@ python3 -m pip install --user uv
 
 - `Pillow`
 - `playwright`
+- `numpy`
 
 ## Playwright
 
@@ -123,3 +124,12 @@ cmake --build llama.cpp/build --target llama-server -j 8
 - 入力画像: [00005716.png](/notebooks/imgs/00005716.png)
 - 出力画像: [00005716_bubbled.png](/notebooks/imgs/00005716_bubbled.png)
 - plan JSON: [00005716_plan.json](/notebooks/imgs/00005716_plan.json)
+
+## 補助スクリプト
+
+現在の補助スクリプト:
+
+- 推論専用: [`bubble_infer.py`](/storage/projects/text-bubble/bubble_infer.py)
+- 描画専用: [`bubble_render.py`](/storage/projects/text-bubble/bubble_render.py)
+- SVG 比率変換実験: [`warp_bubble_svg.py`](/storage/projects/text-bubble/scripts/warp_bubble_svg.py)
+- 正方形 bubble 実験: [`render_square_bubble_experiment.py`](/storage/projects/text-bubble/scripts/render_square_bubble_experiment.py)

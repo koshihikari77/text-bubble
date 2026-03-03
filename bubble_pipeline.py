@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import html
 import io
 import json
@@ -14,11 +15,13 @@ import sys
 import textwrap
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 
@@ -39,6 +42,9 @@ BUBBLE_FILL_ALPHA_PNG = 232
 BUBBLE_STROKE_COLOR = "#111111"
 TEXT_COLOR = "#111111"
 TEXT_SHADOW = "none"
+SVG_NS = "http://www.w3.org/2000/svg"
+
+ET.register_namespace("", SVG_NS)
 
 
 SYSTEM_PROMPT = """You are a manga vertical speech-bubble planner.
@@ -430,6 +436,7 @@ def compute_bubble_layout(
     canvas_width: int,
     canvas_height: int,
     text_bbox: tuple[int, int, int, int],
+    text_layout: dict[str, int],
     font_size: int,
     outline_width: int,
 ) -> dict[str, int]:
@@ -437,16 +444,10 @@ def compute_bubble_layout(
     text_width = text_right - text_left
     text_height = text_bottom - text_top
     em = max(font_size, 24)
-
-    bubble_width = max(
-        text_width + max(64, int(round(em * 2.5))),
-        int(round(text_width / 0.48)),
-    )
-    bubble_height = max(
-        text_height + max(20, int(round(em * 1.15))),
-        int(round(text_height / 0.79)),
-        int(round(bubble_width * 1.32)),
-    )
+    horizontal_padding = max(outline_width * 6, int(round(em * 1.35)))
+    vertical_padding = max(outline_width * 4, int(round(em * 1.0)))
+    bubble_width = text_width + horizontal_padding * 2
+    bubble_height = text_height + vertical_padding * 2
 
     horizontal_slack = max(0, bubble_width - text_width)
     vertical_slack = max(0, bubble_height - text_height)
@@ -564,17 +565,14 @@ def resolve_chromium_executable() -> str | None:
     return None
 
 
-def bubble_png_to_rgba(asset_path: Path) -> Image.Image:
-    asset = Image.open(asset_path).convert("L")
-    width, height = asset.size
-    pixels = asset.load()
-    outline_cutoff = 240
-    outside = [[False] * width for _ in range(height)]
+def flood_fill_outside_open_regions(grayscale: np.ndarray, outline_cutoff: int) -> np.ndarray:
+    height, width = grayscale.shape
+    outside = np.zeros((height, width), dtype=bool)
     queue: deque[tuple[int, int]] = deque()
 
     def enqueue_if_open(x: int, y: int) -> None:
-        if 0 <= x < width and 0 <= y < height and not outside[y][x] and pixels[x, y] >= outline_cutoff:
-            outside[y][x] = True
+        if 0 <= x < width and 0 <= y < height and not outside[y, x] and grayscale[y, x] >= outline_cutoff:
+            outside[y, x] = True
             queue.append((x, y))
 
     for x in range(width):
@@ -591,19 +589,21 @@ def bubble_png_to_rgba(asset_path: Path) -> Image.Image:
         enqueue_if_open(x, y + 1)
         enqueue_if_open(x, y - 1)
 
-    rgba = Image.new("RGBA", asset.size, (0, 0, 0, 0))
-    out = rgba.load()
-    for y in range(height):
-        for x in range(width):
-            value = pixels[x, y]
-            if value < outline_cutoff:
-                out[x, y] = (0, 0, 0, 255)
-            elif not outside[y][x]:
-                out[x, y] = (255, 255, 255, BUBBLE_FILL_ALPHA_PNG)
-            else:
-                out[x, y] = (0, 0, 0, 0)
+    return outside
 
-    return rgba
+
+def bubble_png_to_rgba(asset_path: Path) -> Image.Image:
+    grayscale = np.asarray(Image.open(asset_path).convert("L"), dtype=np.uint8)
+    outline_cutoff = 240
+    outside = flood_fill_outside_open_regions(grayscale, outline_cutoff)
+
+    rgba = np.zeros((grayscale.shape[0], grayscale.shape[1], 4), dtype=np.uint8)
+    outline_mask = grayscale < outline_cutoff
+    fill_mask = ~outline_mask & ~outside
+
+    rgba[outline_mask] = np.array([0, 0, 0, 255], dtype=np.uint8)
+    rgba[fill_mask] = np.array([255, 255, 255, BUBBLE_FILL_ALPHA_PNG], dtype=np.uint8)
+    return Image.fromarray(rgba, mode="RGBA")
 
 
 def load_bubble_svg_source(asset_path: Path) -> str:
@@ -612,6 +612,82 @@ def load_bubble_svg_source(asset_path: Path) -> str:
     if asset_path.suffix.lower() == ".txt":
         return asset_path.read_text(encoding="utf-8")
     raise RuntimeError(f"unsupported SVG asset type: {asset_path}")
+
+
+def svg_qname(local: str) -> str:
+    return f"{{{SVG_NS}}}{local}"
+
+
+def parse_svg_viewbox(root: ET.Element) -> tuple[float, float, float, float]:
+    raw = root.attrib.get("viewBox")
+    if not raw:
+        raise RuntimeError("bubble SVG is missing a viewBox")
+    parts = [float(part) for part in raw.replace(",", " ").split()]
+    if len(parts) != 4:
+        raise RuntimeError(f"invalid bubble SVG viewBox: {raw}")
+    return parts[0], parts[1], parts[2], parts[3]
+
+
+def warp_svg_source_to_aspect(svg_source: str, target_aspect: float) -> str:
+    if target_aspect <= 0:
+        raise RuntimeError("target aspect must be positive")
+    root = ET.fromstring(svg_source)
+    vb_x, vb_y, vb_w, vb_h = parse_svg_viewbox(root)
+    source_aspect = vb_w / vb_h
+    if abs(source_aspect - target_aspect) < 1e-6:
+        return svg_source
+
+    center_x = vb_x + vb_w / 2.0
+    center_y = vb_y + vb_h / 2.0
+
+    defs_nodes: list[ET.Element] = []
+    drawable_nodes: list[ET.Element] = []
+    for child in list(root):
+        if child.tag == svg_qname("defs"):
+            defs_nodes.append(copy.deepcopy(child))
+        else:
+            drawable_nodes.append(copy.deepcopy(child))
+
+    if target_aspect >= source_aspect:
+        target_w = vb_h * target_aspect
+        target_h = vb_h
+        scale_x = target_w / vb_w
+        scale_y = 1.0
+    else:
+        target_w = vb_w
+        target_h = vb_w / target_aspect
+        scale_x = 1.0
+        scale_y = target_h / vb_h
+
+    target_x = center_x - target_w / 2.0
+    target_y = center_y - target_h / 2.0
+
+    new_root = ET.Element(
+        svg_qname("svg"),
+        {
+            "width": f"{target_w:.4f}",
+            "height": f"{target_h:.4f}",
+            "viewBox": f"{target_x:.4f} {target_y:.4f} {target_w:.4f} {target_h:.4f}",
+        },
+    )
+    for defs in defs_nodes:
+        new_root.append(defs)
+
+    warp_group = ET.SubElement(
+        new_root,
+        svg_qname("g"),
+        {
+            "transform": (
+                f"translate({center_x:.4f} {center_y:.4f}) "
+                f"scale({scale_x:.6f} {scale_y:.6f}) "
+                f"translate({-center_x:.4f} {-center_y:.4f})"
+            )
+        },
+    )
+    for node in drawable_nodes:
+        warp_group.append(node)
+
+    return ET.tostring(new_root, encoding="unicode")
 
 
 def build_bubble_svg_html(svg_source: str, width: int, height: int) -> str:
@@ -653,17 +729,11 @@ html, body {{
 
 
 def white_to_transparent(image: Image.Image, cutoff: int = 248) -> Image.Image:
-    rgba = image.convert("RGBA")
-    pixels = rgba.load()
-    width, height = rgba.size
-    for y in range(height):
-        for x in range(width):
-            r, g, b, _ = pixels[x, y]
-            if r >= cutoff and g >= cutoff and b >= cutoff:
-                pixels[x, y] = (255, 255, 255, 0)
-            else:
-                pixels[x, y] = (r, g, b, 255)
-    return rgba
+    rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
+    white_mask = np.all(rgba[:, :, :3] >= cutoff, axis=2)
+    rgba[white_mask, 3] = 0
+    rgba[~white_mask, 3] = 255
+    return Image.fromarray(rgba, mode="RGBA")
 
 
 def build_render_html(
@@ -954,6 +1024,7 @@ def render_bubble(
         canvas_width=width_px,
         canvas_height=height_px,
         text_bbox=text_overlay.alpha_bbox,
+        text_layout=text_layout,
         font_size=actual_font_size,
         outline_width=text_layout["outline_width"],
     )
@@ -977,7 +1048,10 @@ def render_bubble(
                 viewport={"width": bubble_layout["bubble_width"], "height": bubble_layout["bubble_height"]},
                 device_scale_factor=1,
             )
-            bubble_svg = load_bubble_svg_source(bubble_asset)
+            bubble_svg = warp_svg_source_to_aspect(
+                load_bubble_svg_source(bubble_asset),
+                bubble_layout["bubble_width"] / max(1, bubble_layout["bubble_height"]),
+            )
             bubble_page.set_content(
                 build_bubble_svg_html(
                     svg_source=bubble_svg,

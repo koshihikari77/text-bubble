@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="-70.0000 50.0000 660.0000 660.0000"><defs>
+    <style>
+      :root {
+        --stroke: #111;
+        --strokeW: 6;
+        --fill: #ffffff;
+        --fillOpacity: 0.88;
+      }
+
+      .bubble {
+        fill: var(--fill);
+        fill-opacity: var(--fillOpacity);
+        stroke: var(--stroke);
+        stroke-width: var(--strokeW);
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+    </style>
+  </defs>
+
+  <g transform="translate(260.0000 380.0000) scale(1.571429 1) translate(-260.0000 -380.0000)"><path class="bubble" d="     M 260 50     C 355 50 425 84 448 152     C 465 214 470 290 470 380     C 470 470 465 546 448 608     C 425 676 355 710 260 710     C 165 710 95 676 72 608     C 55 546 50 470 50 380     C 50 290 55 214 72 152     C 95 84 165 50 260 50     Z   " />
+</g></svg>
