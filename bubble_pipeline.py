@@ -26,6 +26,11 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
+# Speech-bubble sizing based on the text block.
+# The LLM-provided anchor remains the text block's top-right corner.
+BUBBLE_INNER_WIDTH_RATIO = 0.62
+BUBBLE_INNER_HEIGHT_RATIO = 0.72
+
 
 SYSTEM_PROMPT = """You are a manga vertical speech-bubble planner.
 Given one image and one fixed Japanese line, return exactly one JSON object and nothing else.
@@ -245,6 +250,10 @@ def compute_layout(
     block_width = metrics["block_width"]
     block_height = metrics["block_height"]
 
+    if anchor_x <= 0 or anchor_y < 0:
+        raise RuntimeError("anchor point is outside the image")
+
+    em = max(font_size, 24)
     text_left = anchor_x - block_width
     text_top = anchor_y
     text_right = anchor_x
@@ -252,28 +261,33 @@ def compute_layout(
     if text_left < 0 or text_top < 0:
         raise RuntimeError("text block anchor would place vertical text outside the image")
 
-    if anchor_x <= 0 or anchor_y < 0:
-        raise RuntimeError("anchor point is outside the image")
+    # Convert the text-block size into a bubble size by treating the text
+    # block as the usable inner box of the asset, not the full outer bounds.
+    bubble_width = max(
+        block_width + max(44, int(round(em * 1.9))),
+        int(round(block_width / BUBBLE_INNER_WIDTH_RATIO)),
+    )
+    bubble_height = max(
+        block_height + max(56, int(round(em * 2.2))),
+        int(round(block_height / BUBBLE_INNER_HEIGHT_RATIO)),
+        int(round(bubble_width * 1.68)),
+    )
 
-    em = max(font_size, 24)
-    pad_left = max(22, int(round(em * 1.0)))
-    pad_right = max(22, int(round(em * 1.0)))
-    pad_top = max(20, int(round(em * 0.9)))
-    pad_bottom = max(24, int(round(em * 1.1)))
-    bubble_left = text_left - pad_left
-    bubble_top = text_top - pad_top
-    bubble_right = text_right + pad_right
-    bubble_bottom = text_bottom + pad_bottom
-    bubble_width = bubble_right - bubble_left
-    bubble_height = bubble_bottom - bubble_top
-    min_height = int(round(bubble_width * 1.6))
-    if bubble_height < min_height:
-        extra = min_height - bubble_height
-        bubble_top -= extra // 2
-        bubble_bottom += extra - extra // 2
+    # Keep the LLM text position fixed. Only size and place the bubble around it.
+    horizontal_slack = max(0, bubble_width - block_width)
+    vertical_slack = max(0, bubble_height - block_height)
+    side_pad = horizontal_slack // 2
+    vertical_pad = vertical_slack // 2
+
+    bubble_left = text_left - side_pad
+    bubble_top = text_top - vertical_pad
+    bubble_right = bubble_left + bubble_width
+    bubble_bottom = bubble_top + bubble_height
 
     if bubble_left < 0 or bubble_top < 0 or bubble_right > canvas_width or bubble_bottom > canvas_height:
         raise RuntimeError("bubble outline exceeds image bounds")
+    if text_left < 0 or text_top < 0 or text_right > canvas_width or text_bottom > canvas_height:
+        raise RuntimeError("text block layout exceeds image bounds")
     return {
         "font_size": font_size,
         "em": em,
