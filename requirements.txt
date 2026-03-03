@@ -1,2 +1,5 @@
 Pillow>=10.4.0
 playwright>=1.52.0
+cairocffi>=1.7.1
+pangocffi>=0.14.0
+pangocairocffi>=0.7.0

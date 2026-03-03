@@ -8,6 +8,8 @@ import io
 import json
 import mimetypes
 import os
+import shutil
+import subprocess
 import sys
 import textwrap
 import urllib.error
@@ -50,6 +52,12 @@ class BubblePlan:
     columns: list[str]
 
 
+@dataclass
+class TextRenderResult:
+    image: Image.Image
+    alpha_bbox: tuple[int, int, int, int]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate one vertical speech bubble from an image using llama-server.")
     parser.add_argument("--input", required=True, help="Input image path")
@@ -63,6 +71,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bubble-asset", help="Bubble image asset path")
     parser.add_argument("--font-size", default=0, type=int, help="Override vertical text font size")
     parser.add_argument("--temperature", default=0.0, type=float, help="Sampling temperature")
+    parser.add_argument(
+        "--text-renderer",
+        choices=["browser", "pango"],
+        default="browser",
+        help="Backend for vertical text rendering",
+    )
     return parser.parse_args()
 
 
@@ -235,7 +249,7 @@ def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
     }
 
 
-def compute_layout(
+def compute_text_layout(
     canvas_width: int,
     canvas_height: int,
     plan: BubblePlan,
@@ -261,31 +275,6 @@ def compute_layout(
     if text_left < 0 or text_top < 0:
         raise RuntimeError("text block anchor would place vertical text outside the image")
 
-    # Convert the text-block size into a bubble size by treating the text
-    # block as the usable inner box of the asset, not the full outer bounds.
-    bubble_width = max(
-        block_width + max(44, int(round(em * 1.9))),
-        int(round(block_width / BUBBLE_INNER_WIDTH_RATIO)),
-    )
-    bubble_height = max(
-        block_height + max(56, int(round(em * 2.2))),
-        int(round(block_height / BUBBLE_INNER_HEIGHT_RATIO)),
-        int(round(bubble_width * 1.68)),
-    )
-
-    # Keep the LLM text position fixed. Only size and place the bubble around it.
-    horizontal_slack = max(0, bubble_width - block_width)
-    vertical_slack = max(0, bubble_height - block_height)
-    side_pad = horizontal_slack // 2
-    vertical_pad = vertical_slack // 2
-
-    bubble_left = text_left - side_pad
-    bubble_top = text_top - vertical_pad
-    bubble_right = bubble_left + bubble_width
-    bubble_bottom = bubble_top + bubble_height
-
-    if bubble_left < 0 or bubble_top < 0 or bubble_right > canvas_width or bubble_bottom > canvas_height:
-        raise RuntimeError("bubble outline exceeds image bounds")
     if text_left < 0 or text_top < 0 or text_right > canvas_width or text_bottom > canvas_height:
         raise RuntimeError("text block layout exceeds image bounds")
     return {
@@ -302,13 +291,50 @@ def compute_layout(
         "text_top": text_top,
         "text_right": text_right,
         "text_bottom": text_bottom,
+        "outline_width": max(3, canvas_width // 320),
+    }
+
+
+def compute_bubble_layout(
+    canvas_width: int,
+    canvas_height: int,
+    text_bbox: tuple[int, int, int, int],
+    font_size: int,
+    outline_width: int,
+) -> dict[str, int]:
+    text_left, text_top, text_right, text_bottom = text_bbox
+    text_width = text_right - text_left
+    text_height = text_bottom - text_top
+    em = max(font_size, 24)
+
+    bubble_width = max(
+        text_width + max(44, int(round(em * 1.9))),
+        int(round(text_width / BUBBLE_INNER_WIDTH_RATIO)),
+    )
+    bubble_height = max(
+        text_height + max(56, int(round(em * 2.2))),
+        int(round(text_height / BUBBLE_INNER_HEIGHT_RATIO)),
+        int(round(bubble_width * 1.68)),
+    )
+
+    horizontal_slack = max(0, bubble_width - text_width)
+    vertical_slack = max(0, bubble_height - text_height)
+    bubble_left = text_left - horizontal_slack // 2
+    bubble_top = text_top - vertical_slack // 2
+    bubble_right = bubble_left + bubble_width
+    bubble_bottom = bubble_top + bubble_height
+
+    if bubble_left < 0 or bubble_top < 0 or bubble_right > canvas_width or bubble_bottom > canvas_height:
+        raise RuntimeError("bubble outline exceeds image bounds")
+
+    return {
         "bubble_left": bubble_left,
         "bubble_top": bubble_top,
         "bubble_right": bubble_right,
         "bubble_bottom": bubble_bottom,
         "bubble_width": bubble_width,
         "bubble_height": bubble_height,
-        "outline_width": max(3, canvas_width // 320),
+        "outline_width": outline_width,
     }
 
 
@@ -495,22 +521,24 @@ def build_render_html(
     canvas_width: int,
     canvas_height: int,
     plan: BubblePlan,
-    layout: dict[str, int],
+    text_layout: dict[str, int],
     font_stack: str,
     font_css: str,
 ) -> str:
     text_columns = []
     for index, column in enumerate(plan.columns):
-        left = layout["block_width"] - layout["column_width"] - index * (layout["column_width"] + layout["column_gap"])
+        left = text_layout["block_width"] - text_layout["column_width"] - index * (
+            text_layout["column_width"] + text_layout["column_gap"]
+        )
         text_columns.append(
             (
                 '<div class="column" style="left:{left}px;width:{width}px;height:{height}px;line-height:{line_height}px">'
                 "{text}</div>"
             ).format(
                 left=left,
-                width=layout["column_width"],
-                height=layout["block_height"],
-                line_height=layout["char_step"],
+                width=text_layout["column_width"],
+                height=text_layout["block_height"],
+                line_height=text_layout["char_step"],
                 text=html.escape(column),
             )
         )
@@ -538,10 +566,10 @@ html, body {{
 .text-block {{
   position: absolute;
   z-index: 1;
-  left: {layout["text_left"]}px;
-  top: {layout["text_top"]}px;
-  width: {layout["block_width"]}px;
-  height: {layout["block_height"]}px;
+  left: {text_layout["text_left"]}px;
+  top: {text_layout["text_top"]}px;
+  width: {text_layout["block_width"]}px;
+  height: {text_layout["block_height"]}px;
 }}
 .column {{
   position: absolute;
@@ -550,7 +578,7 @@ html, body {{
   text-orientation: mixed;
   white-space: nowrap;
   font-family: {font_stack};
-  font-size: {layout["font_size"]}px;
+  font-size: {text_layout["font_size"]}px;
   font-weight: 500;
   color: #111;
   letter-spacing: 0;
@@ -567,6 +595,183 @@ html, body {{
 """
 
 
+def alpha_bbox_or_fail(image: Image.Image) -> tuple[int, int, int, int]:
+    bbox = image.getchannel("A").getbbox()
+    if bbox is None:
+        raise RuntimeError("text renderer produced an empty alpha layer")
+    left, top, right, bottom = bbox
+    return int(left), int(top), int(right), int(bottom)
+
+
+def register_font_with_fontconfig(font_path: str | None) -> str | None:
+    if not font_path:
+        return None
+    source = Path(font_path)
+    if not source.exists():
+        return None
+    font_dir = Path.home() / ".local" / "share" / "fonts" / "text-bubble"
+    font_dir.mkdir(parents=True, exist_ok=True)
+    target = font_dir / source.name
+    if not target.exists() or target.read_bytes() != source.read_bytes():
+        shutil.copy2(source, target)
+        subprocess.run(["fc-cache", "-f", str(font_dir)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        result = subprocess.run(
+            ["fc-scan", "--format", "%{family[0]}\n", str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    family = result.stdout.strip().splitlines()
+    return family[0].strip() if family else None
+
+
+def resolve_pango_family(font_path: str | None, font_family: str | None) -> str:
+    if font_family:
+        return font_family
+    registered = register_font_with_fontconfig(font_path)
+    if registered:
+        return registered
+    fallback = browser_font_stack(font_path).split(",")
+    return fallback[0].strip().strip('"') if fallback else "sans-serif"
+
+
+def render_text_overlay_browser(
+    canvas_width: int,
+    canvas_height: int,
+    plan: BubblePlan,
+    text_layout: dict[str, int],
+    font_path: str | None,
+    font_family: str | None,
+) -> TextRenderResult:
+    browser_root = Path(__file__).resolve().parent / ".playwright-browsers"
+    if browser_root.exists():
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
+    chromium_executable = resolve_chromium_executable()
+    font_css, font_stack = build_font_css(font_path, font_family)
+    html_doc = build_render_html(
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+        plan=plan,
+        text_layout=text_layout,
+        font_stack=font_stack,
+        font_css=font_css,
+    )
+
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        launch_kwargs: dict[str, Any] = {"headless": True}
+        if chromium_executable:
+            launch_kwargs["executable_path"] = chromium_executable
+        browser = playwright.chromium.launch(**launch_kwargs)
+        page = browser.new_page(viewport={"width": canvas_width, "height": canvas_height}, device_scale_factor=1)
+        page.set_content(html_doc, wait_until="load")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(150)
+        overlay_bytes = page.screenshot(omit_background=True)
+        page.close()
+        browser.close()
+
+    overlay = Image.open(io.BytesIO(overlay_bytes)).convert("RGBA")
+    return TextRenderResult(image=overlay, alpha_bbox=alpha_bbox_or_fail(overlay))
+
+
+def render_text_overlay_pango(
+    canvas_width: int,
+    canvas_height: int,
+    plan: BubblePlan,
+    text_layout: dict[str, int],
+    font_path: str | None,
+    font_family: str | None,
+) -> TextRenderResult:
+    import cairocffi as cairo
+    import pangocairocffi
+    import pangocffi
+
+    family = resolve_pango_family(font_path, font_family)
+    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, canvas_width, canvas_height)
+    ctx = cairo.Context(surface)
+    ctx.set_source_rgba(0, 0, 0, 0)
+    ctx.paint()
+
+    layout = pangocairocffi.create_layout(ctx)
+    desc = pangocffi.FontDescription()
+    desc.family = family
+    desc.set_absolute_size(pangocffi.units_from_double(text_layout["font_size"]))
+    layout.font_description = desc
+
+    for column_index, column in enumerate(plan.columns):
+        column_left = text_layout["text_left"] + text_layout["block_width"] - text_layout["column_width"] - column_index * (
+            text_layout["column_width"] + text_layout["column_gap"]
+        )
+        for char_index, glyph in enumerate(column):
+            cell_top = text_layout["text_top"] + char_index * text_layout["char_step"]
+            layout.text = glyph
+            ink_rect, logical_rect = layout.get_extents()
+            logical_x = pangocffi.units_to_double(logical_rect.x)
+            logical_y = pangocffi.units_to_double(logical_rect.y)
+            logical_w = pangocffi.units_to_double(logical_rect.width)
+            logical_h = pangocffi.units_to_double(logical_rect.height)
+            draw_x = column_left + (text_layout["column_width"] - logical_w) / 2.0 - logical_x
+            draw_y = cell_top + (text_layout["char_step"] - logical_h) / 2.0 - logical_y
+
+            ctx.save()
+            if glyph == "ー":
+                cell_cx = column_left + text_layout["column_width"] / 2.0
+                cell_cy = cell_top + text_layout["char_step"] / 2.0
+                ctx.translate(cell_cx, cell_cy)
+                ctx.rotate(-1.5707963267948966)
+                draw_x = -logical_w / 2.0 - logical_x
+                draw_y = -logical_h / 2.0 - logical_y
+            else:
+                ctx.translate(draw_x, draw_y)
+                draw_x = 0.0
+                draw_y = 0.0
+            ctx.set_source_rgba(0.067, 0.067, 0.067, 1.0)
+            ctx.move_to(draw_x, draw_y)
+            pangocairocffi.update_layout(ctx, layout)
+            pangocairocffi.show_layout(ctx, layout)
+            ctx.restore()
+
+    png_buffer = io.BytesIO()
+    surface.write_to_png(png_buffer)
+    overlay = Image.open(io.BytesIO(png_buffer.getvalue())).convert("RGBA")
+    return TextRenderResult(image=overlay, alpha_bbox=alpha_bbox_or_fail(overlay))
+
+
+def render_text_overlay(
+    renderer: str,
+    canvas_width: int,
+    canvas_height: int,
+    plan: BubblePlan,
+    text_layout: dict[str, int],
+    font_path: str | None,
+    font_family: str | None,
+) -> TextRenderResult:
+    if renderer == "browser":
+        return render_text_overlay_browser(
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            plan=plan,
+            text_layout=text_layout,
+            font_path=font_path,
+            font_family=font_family,
+        )
+    if renderer == "pango":
+        return render_text_overlay_pango(
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            plan=plan,
+            text_layout=text_layout,
+            font_path=font_path,
+            font_family=font_family,
+        )
+    raise RuntimeError(f"unsupported text renderer: {renderer}")
+
+
 def render_bubble(
     image_path: Path,
     output_path: Path,
@@ -575,6 +780,7 @@ def render_bubble(
     font_family: str | None,
     bubble_asset: Path,
     font_size: int,
+    text_renderer: str,
 ) -> None:
     browser_root = Path(__file__).resolve().parent / ".playwright-browsers"
     if browser_root.exists():
@@ -584,15 +790,22 @@ def render_bubble(
     width_px, height_px = image.size
     image.close()
     actual_font_size = font_size or max(26, min(52, height_px // 28))
-    layout = compute_layout(width_px, height_px, plan, actual_font_size)
-    font_css, font_stack = build_font_css(font_path, font_family)
-    html_doc = build_render_html(
+    text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
+    text_overlay = render_text_overlay(
+        renderer=text_renderer,
         canvas_width=width_px,
         canvas_height=height_px,
         plan=plan,
-        layout=layout,
-        font_stack=font_stack,
-        font_css=font_css,
+        text_layout=text_layout,
+        font_path=font_path,
+        font_family=font_family,
+    )
+    bubble_layout = compute_bubble_layout(
+        canvas_width=width_px,
+        canvas_height=height_px,
+        text_bbox=text_overlay.alpha_bbox,
+        font_size=actual_font_size,
+        outline_width=text_layout["outline_width"],
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     from playwright.sync_api import sync_playwright
@@ -606,43 +819,34 @@ def render_bubble(
         browser = playwright.chromium.launch(**launch_kwargs)
         if bubble_asset.suffix.lower() == ".png":
             bubble_image = bubble_png_to_rgba(bubble_asset).resize(
-                (layout["bubble_width"], layout["bubble_height"]),
+                (bubble_layout["bubble_width"], bubble_layout["bubble_height"]),
                 Image.Resampling.LANCZOS,
             )
         else:
             bubble_page = browser.new_page(
-                viewport={"width": layout["bubble_width"], "height": layout["bubble_height"]},
+                viewport={"width": bubble_layout["bubble_width"], "height": bubble_layout["bubble_height"]},
                 device_scale_factor=1,
             )
             bubble_svg = load_bubble_svg_source(bubble_asset)
             bubble_page.set_content(
                 build_bubble_svg_html(
                     svg_source=bubble_svg,
-                    width=layout["bubble_width"],
-                    height=layout["bubble_height"],
+                    width=bubble_layout["bubble_width"],
+                    height=bubble_layout["bubble_height"],
                 ),
                 wait_until="load",
             )
             bubble_page.wait_for_load_state("networkidle")
             bubble_page.wait_for_timeout(100)
             bubble_image = Image.open(io.BytesIO(bubble_page.screenshot(omit_background=True))).convert("RGBA").resize(
-                (layout["bubble_width"], layout["bubble_height"]),
+                (bubble_layout["bubble_width"], bubble_layout["bubble_height"]),
                 Image.Resampling.LANCZOS,
             )
             bubble_page.close()
-
-        base.alpha_composite(bubble_image, (layout["bubble_left"], layout["bubble_top"]))
-
-        page = browser.new_page(viewport={"width": width_px, "height": height_px}, device_scale_factor=1)
-        page.set_content(html_doc, wait_until="load")
-        page.wait_for_load_state("networkidle")
-        page.wait_for_timeout(150)
-        overlay_bytes = page.screenshot(omit_background=True)
-        page.close()
         browser.close()
 
-    overlay = Image.open(io.BytesIO(overlay_bytes)).convert("RGBA")
-    base.alpha_composite(overlay)
+    base.alpha_composite(bubble_image, (bubble_layout["bubble_left"], bubble_layout["bubble_top"]))
+    base.alpha_composite(text_overlay.image)
     if output_path.suffix.lower() in {".jpg", ".jpeg"}:
         base.convert("RGB").save(output_path, quality=95)
     else:
@@ -702,6 +906,7 @@ def main() -> int:
         font_family=args.font_family,
         bubble_asset=bubble_asset,
         font_size=args.font_size,
+        text_renderer=args.text_renderer,
     )
 
     print(
