@@ -42,13 +42,12 @@ TEXT_SHADOW = "none"
 
 
 SYSTEM_PROMPT = """You are a manga vertical speech-bubble planner.
-Given one image and one fixed Japanese line, return exactly one JSON object and nothing else.
+Given one image and one fixed set of Japanese dialogue lines, return exactly one JSON object and nothing else.
 Never output markdown fences.
 Never output prose outside the JSON object.
 Respect every required field in the schema.
 The dialogue text is fixed. Do not rewrite, omit, normalize, or add characters.
-Split the exact dialogue into natural manga-style vertical columns.
-Choose one safe top-right anchor point for the vertical text block.
+Choose safe anchor points for vertical text blocks.
 Avoid covering faces or the most important action area."""
 
 
@@ -56,6 +55,7 @@ Avoid covering faces or the most important action area."""
 class BubblePlan:
     anchor_x: float
     anchor_y: float
+    sentence_ids: list[int]
     columns: list[str]
 
 
@@ -63,6 +63,22 @@ class BubblePlan:
 class TextRenderResult:
     image: Image.Image
     alpha_bbox: tuple[int, int, int, int]
+
+
+def bubble_plan_to_dict(plan: BubblePlan) -> dict[str, Any]:
+    return {
+        "anchor_x": plan.anchor_x,
+        "anchor_y": plan.anchor_y,
+        "sentence_ids": plan.sentence_ids,
+        "columns": plan.columns,
+    }
+
+
+def plans_payload(dialogue_lines: list[str], plans: list[BubblePlan]) -> dict[str, Any]:
+    return {
+        "dialogue_lines": dialogue_lines,
+        "bubbles": [bubble_plan_to_dict(plan) for plan in plans],
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,47 +124,85 @@ def encode_file_as_data_url(path: Path) -> str:
     return f"data:{mime_type};base64,{payload}"
 
 
-def build_user_prompt(dialogue: str) -> str:
+def split_dialogue_lines(dialogue: str) -> list[str]:
+    lines = [line.strip() for line in dialogue.splitlines() if line.strip()]
+    if lines:
+        return lines
+    stripped = dialogue.strip()
+    return [stripped] if stripped else []
+
+
+def build_user_prompt(dialogue_lines: list[str]) -> str:
+    numbered_lines = "\n".join(f"{index}. {line}" for index, line in enumerate(dialogue_lines, start=1))
     return textwrap.dedent(
         f"""
-        Analyze this image and place one vertical manga speech bubble for the fixed dialogue below.
+        Analyze this image and place vertical manga speech bubbles for the fixed dialogue lines below.
 
-        Fixed dialogue:
-        {dialogue}
+        Fixed dialogue lines:
+        {numbered_lines}
 
         Requirements:
-        - Return one JSON object with exactly these keys: "anchor_x", "anchor_y", "columns".
+        - Return one JSON object with exactly one key: "bubbles".
+        - "bubbles" must be an array of 1 to {len(dialogue_lines)} bubble objects.
+        - Each bubble object must contain exactly: "anchor_x", "anchor_y", "sentence_ids", "columns".
         - "anchor_x" and "anchor_y" are normalized 0.0 to 1.0 image coordinates.
         - The anchor is the top-right corner of the text block, not the bubble outline.
+        - "sentence_ids" must contain consecutive 1-based line indices from the list above.
+        - Every dialogue line must appear exactly once across all bubbles.
+        - Keep the original line order. Do not reorder lines.
         - "columns" must be ordered from right to left.
-        - When all strings in "columns" are concatenated, they must exactly equal:
-          {dialogue}
-        - Split only into natural manga-style vertical columns.
+        - When all strings in "columns" are concatenated, they must exactly equal the assigned dialogue line(s) joined with no separator changes.
+        - Split into natural manga-style vertical columns.
+        - Prefer columns of roughly 3 to 7 Japanese characters.
+        - Avoid over-fragmented output. Do not create many 1 or 2 character columns unless unavoidable.
+        - Prefer one line per bubble unless two adjacent short lines clearly fit better together.
         - Do not add extra keys.
         - Do not use markdown code fences.
         """
     ).strip()
 
 
-def build_plan_schema() -> dict[str, Any]:
+def build_plan_schema(num_lines: int) -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "anchor_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "anchor_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            "columns": {
+            "bubbles": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 8,
+                "maxItems": num_lines,
                 "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 12,
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "anchor_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "anchor_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "sentence_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": num_lines,
+                            "items": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": num_lines,
+                            },
+                        },
+                        "columns": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 12,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 24,
+                            },
+                        },
+                    },
+                    "required": ["anchor_x", "anchor_y", "sentence_ids", "columns"],
                 },
             },
         },
-        "required": ["anchor_x", "anchor_y", "columns"],
+        "required": ["bubbles"],
     }
 
 
@@ -158,6 +212,7 @@ def post_chat_completion(
     prompt: str,
     image_data_url: str,
     temperature: float,
+    schema: dict[str, Any],
 ) -> dict[str, Any]:
     body = {
         "model": model,
@@ -169,7 +224,7 @@ def post_chat_completion(
         "chat_template_kwargs": {
             "enable_thinking": False,
         },
-        "json_schema": build_plan_schema(),
+        "json_schema": schema,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -199,7 +254,7 @@ def post_chat_completion(
         raise RuntimeError(f"failed to reach llama-server: {exc}") from exc
 
 
-def extract_plan(response: dict[str, Any], dialogue: str) -> BubblePlan:
+def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[BubblePlan]:
     message = response["choices"][0]["message"]["content"]
     if isinstance(message, list):
         parts = [chunk.get("text", "") for chunk in message if isinstance(chunk, dict)]
@@ -219,17 +274,42 @@ def extract_plan(response: dict[str, Any], dialogue: str) -> BubblePlan:
         raise RuntimeError(f"model returned invalid JSON: {summarize_raw_output(raw_message)}") from exc
     if not isinstance(data, dict):
         raise RuntimeError(f"unexpected JSON payload type: {type(data).__name__}")
-    columns = data.get("columns")
-    if not isinstance(columns, list) or not columns:
-        raise RuntimeError("plan must include a non-empty columns array")
-    normalized_columns = [str(item) for item in columns]
-    if "".join(normalized_columns) != dialogue:
-        raise RuntimeError("columns do not reconstruct the exact dialogue")
-    return BubblePlan(
-        anchor_x=float(data["anchor_x"]),
-        anchor_y=float(data["anchor_y"]),
-        columns=normalized_columns,
-    )
+    bubbles = data.get("bubbles")
+    if not isinstance(bubbles, list) or not bubbles:
+        raise RuntimeError("plan must include a non-empty bubbles array")
+
+    used_sentence_ids: list[int] = []
+    plans: list[BubblePlan] = []
+    for index, bubble in enumerate(bubbles, start=1):
+        if not isinstance(bubble, dict):
+            raise RuntimeError(f"bubble {index} must be an object")
+        columns = bubble.get("columns")
+        sentence_ids = bubble.get("sentence_ids")
+        if not isinstance(columns, list) or not columns:
+            raise RuntimeError(f"bubble {index} must include a non-empty columns array")
+        if not isinstance(sentence_ids, list) or not sentence_ids:
+            raise RuntimeError(f"bubble {index} must include a non-empty sentence_ids array")
+        normalized_columns = [str(item) for item in columns]
+        normalized_ids = [int(item) for item in sentence_ids]
+        if normalized_ids != list(range(normalized_ids[0], normalized_ids[0] + len(normalized_ids))):
+            raise RuntimeError(f"bubble {index} sentence_ids must be consecutive")
+        joined_text = "".join(dialogue_lines[sentence_id - 1] for sentence_id in normalized_ids)
+        if "".join(normalized_columns) != joined_text:
+            raise RuntimeError(f"bubble {index} columns do not reconstruct the assigned dialogue")
+        used_sentence_ids.extend(normalized_ids)
+        plans.append(
+            BubblePlan(
+                anchor_x=float(bubble["anchor_x"]),
+                anchor_y=float(bubble["anchor_y"]),
+                sentence_ids=normalized_ids,
+                columns=normalized_columns,
+            )
+        )
+
+    expected_ids = list(range(1, len(dialogue_lines) + 1))
+    if sorted(used_sentence_ids) != expected_ids:
+        raise RuntimeError("bubbles must cover every dialogue line exactly once")
+    return plans
 
 
 def summarize_raw_output(raw_message: str) -> str:
@@ -237,6 +317,50 @@ def summarize_raw_output(raw_message: str) -> str:
     if len(compact) > 200:
         compact = compact[:200].rstrip() + "..."
     return compact
+
+
+def infer_bubble_plans(
+    image_path: Path,
+    server: str,
+    model: str,
+    dialogue: str,
+    temperature: float,
+) -> tuple[list[str], list[BubblePlan]]:
+    dialogue_lines = split_dialogue_lines(dialogue)
+    if not dialogue_lines:
+        raise RuntimeError("dialogue must contain at least one non-empty line")
+    image_data_url = encode_image_as_data_url(image_path)
+    prompt = build_user_prompt(dialogue_lines)
+    response = post_chat_completion(
+        server=server,
+        model=model,
+        prompt=prompt,
+        image_data_url=image_data_url,
+        temperature=temperature,
+        schema=build_plan_schema(len(dialogue_lines)),
+    )
+    return dialogue_lines, extract_plan(response, dialogue_lines)
+
+
+def save_plan_json(plan_path: Path, dialogue_lines: list[str], plans: list[BubblePlan]) -> None:
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(plans_payload(dialogue_lines, plans), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_plan_json(plan_path: Path) -> tuple[list[str], list[BubblePlan]]:
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("plan JSON must be an object")
+    dialogue_lines = data.get("dialogue_lines")
+    bubbles = data.get("bubbles")
+    if not isinstance(dialogue_lines, list) or not all(isinstance(item, str) for item in dialogue_lines):
+        raise RuntimeError("plan JSON must include dialogue_lines")
+    if not isinstance(bubbles, list):
+        raise RuntimeError("plan JSON must include bubbles")
+    return dialogue_lines, extract_plan({"choices": [{"message": {"content": json.dumps({"bubbles": bubbles}, ensure_ascii=False)}}]}, dialogue_lines)
 
 
 def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
@@ -319,7 +443,7 @@ def compute_bubble_layout(
         int(round(text_width / 0.48)),
     )
     bubble_height = max(
-        text_height + max(38, int(round(em * 1.35))),
+        text_height + max(20, int(round(em * 1.15))),
         int(round(text_height / 0.79)),
         int(round(bubble_width * 1.32)),
     )
@@ -331,9 +455,6 @@ def compute_bubble_layout(
     bubble_right = bubble_left + bubble_width
     bubble_bottom = bubble_top + bubble_height
 
-    if bubble_left < 0 or bubble_top < 0 or bubble_right > canvas_width or bubble_bottom > canvas_height:
-        raise RuntimeError("bubble outline exceeds image bounds")
-
     return {
         "bubble_left": bubble_left,
         "bubble_top": bubble_top,
@@ -343,6 +464,19 @@ def compute_bubble_layout(
         "bubble_height": bubble_height,
         "outline_width": outline_width,
     }
+
+
+def alpha_composite_clipped(base: Image.Image, overlay: Image.Image, left: int, top: int) -> None:
+    src_left = max(0, -left)
+    src_top = max(0, -top)
+    dst_left = max(0, left)
+    dst_top = max(0, top)
+    width = min(overlay.width - src_left, base.width - dst_left)
+    height = min(overlay.height - src_top, base.height - dst_top)
+    if width <= 0 or height <= 0:
+        return
+    cropped = overlay.crop((src_left, src_top, src_left + width, src_top + height))
+    base.alpha_composite(cropped, (dst_left, dst_top))
 
 
 def browser_font_stack(font_path: str | None) -> str:
@@ -861,12 +995,67 @@ def render_bubble(
             bubble_page.close()
         browser.close()
 
-    base.alpha_composite(bubble_image, (bubble_layout["bubble_left"], bubble_layout["bubble_top"]))
+    alpha_composite_clipped(base, bubble_image, bubble_layout["bubble_left"], bubble_layout["bubble_top"])
     base.alpha_composite(text_overlay.image)
     if output_path.suffix.lower() in {".jpg", ".jpeg"}:
         base.convert("RGB").save(output_path, quality=95)
     else:
         base.save(output_path)
+
+
+def render_bubbles(
+    image_path: Path,
+    output_path: Path,
+    plans: list[BubblePlan],
+    font_path: str | None,
+    font_family: str | None,
+    bubble_asset: Path,
+    font_size: int,
+    text_renderer: str,
+) -> None:
+    current_input = image_path
+    if not plans:
+        raise RuntimeError("no bubble plans to render")
+    if len(plans) == 1:
+        render_bubble(
+            image_path=image_path,
+            output_path=output_path,
+            plan=plans[0],
+            font_path=font_path,
+            font_family=font_family,
+            bubble_asset=bubble_asset,
+            font_size=font_size,
+            text_renderer=text_renderer,
+        )
+        return
+
+    temp_dir = output_path.parent / ".tmp-bubble-render"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_paths: list[Path] = []
+    for index, plan in enumerate(plans, start=1):
+        target = output_path if index == len(plans) else temp_dir / f"render_{index:02d}.png"
+        render_bubble(
+            image_path=current_input,
+            output_path=target,
+            plan=plan,
+            font_path=font_path,
+            font_family=font_family,
+            bubble_asset=bubble_asset,
+            font_size=font_size,
+            text_renderer=text_renderer,
+        )
+        if target != output_path:
+            temp_paths.append(target)
+            current_input = target
+
+    for temp_path in temp_paths:
+        if temp_path.exists():
+            temp_path.unlink()
+    if temp_dir.exists():
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
 
 
 def main() -> int:
@@ -886,38 +1075,25 @@ def main() -> int:
         print(f"bubble asset not found: {bubble_asset}", file=sys.stderr)
         return 1
 
-    image_data_url = encode_image_as_data_url(image_path)
-    prompt = build_user_prompt(args.dialogue)
-    response = post_chat_completion(
-        server=args.server,
-        model=args.model,
-        prompt=prompt,
-        image_data_url=image_data_url,
-        temperature=args.temperature,
-    )
-    plan = extract_plan(response, args.dialogue)
+    try:
+        dialogue_lines, plans = infer_bubble_plans(
+            image_path=image_path,
+            server=args.server,
+            model=args.model,
+            dialogue=args.dialogue,
+            temperature=args.temperature,
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     if args.plan_json:
-        plan_path = Path(args.plan_json)
-        plan_path.parent.mkdir(parents=True, exist_ok=True)
-        plan_path.write_text(
-            json.dumps(
-                {
-                    "dialogue": args.dialogue,
-                    "anchor_x": plan.anchor_x,
-                    "anchor_y": plan.anchor_y,
-                    "columns": plan.columns,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        save_plan_json(Path(args.plan_json), dialogue_lines, plans)
 
-    render_bubble(
+    render_bubbles(
         image_path=image_path,
         output_path=output_path,
-        plan=plan,
+        plans=plans,
         font_path=font_path,
         font_family=args.font_family,
         bubble_asset=bubble_asset,
@@ -928,10 +1104,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "dialogue": args.dialogue,
-                "anchor_x": plan.anchor_x,
-                "anchor_y": plan.anchor_y,
-                "columns": plan.columns,
+                **plans_payload(dialogue_lines, plans),
                 "output": str(output_path),
             },
             ensure_ascii=False,
