@@ -29,6 +29,7 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 FONT_CANDIDATES = [
+    str(PROJECT_ROOT / "assets" / "JKG-L_3.ttf"),
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -324,7 +325,7 @@ def extract_reflow_plan(
         sentence_ids=assignment_plan.sentence_ids,
         columns=columns,
     )
-    return validate_reflow_plans(dialogue_lines, [plan])[0]
+    return _validate_reflow_plans(dialogue_lines, [plan], require_full_coverage=False)[0]
 
 
 def infer_reflow_columns_for_bubble(
@@ -461,6 +462,7 @@ def post_chat_completion(
     schema: dict[str, Any],
     system_prompt: str | None = None,
     enable_thinking: bool = False,
+    n_predict: int = 220,
 ) -> dict[str, Any]:
     # 推論結果は自由文ではなく JSON schema 準拠で返させる。
     if system_prompt is None:
@@ -472,7 +474,7 @@ def post_chat_completion(
         "model": model,
         "temperature": temperature,
         "top_k": 1,
-        "n_predict": 220,
+        "n_predict": n_predict,
         "seed": 42,
         "reasoning_format": "none",
         "chat_template_kwargs": {
@@ -647,6 +649,14 @@ def validate_assignment_plans(dialogue_lines: list[str], plans: list[AssignmentB
 
 
 def validate_reflow_plans(dialogue_lines: list[str], plans: list[ReflowBubblePlan]) -> list[ReflowBubblePlan]:
+    return _validate_reflow_plans(dialogue_lines, plans, require_full_coverage=True)
+
+
+def _validate_reflow_plans(
+    dialogue_lines: list[str],
+    plans: list[ReflowBubblePlan],
+    require_full_coverage: bool,
+) -> list[ReflowBubblePlan]:
     used_sentence_ids: list[int] = []
     seen_bubble_ids: set[str] = set()
     punctuation_only_chars = set("、。，．？！?!…ー〜・「」『』（）()[]【】〈〉《》")
@@ -673,8 +683,10 @@ def validate_reflow_plans(dialogue_lines: list[str], plans: list[ReflowBubblePla
             raise RuntimeError(f"bubble {index} columns do not reconstruct the assigned dialogue")
         used_sentence_ids.extend(normalized_ids)
 
-    expected_ids = list(range(1, len(dialogue_lines) + 1))
+    expected_ids = sorted(sentence_id for plan in plans for sentence_id in plan.sentence_ids)
     if sorted(used_sentence_ids) != expected_ids:
+        raise RuntimeError("reflow plans contain unexpected sentence_ids")
+    if require_full_coverage and expected_ids != list(range(1, len(dialogue_lines) + 1)):
         raise RuntimeError("bubbles must cover every dialogue line exactly once")
     return plans
 
@@ -705,6 +717,7 @@ def infer_bubble_plans(
         image_data_url=image_data_url,
         temperature=temperature,
         schema=build_plan_schema(len(dialogue_lines)),
+        n_predict=max(220, 96 * len(dialogue_lines)),
     )
     return dialogue_lines, extract_plan(response, dialogue_lines)
 
@@ -728,6 +741,7 @@ def infer_scene_bubble_plans(
         image_data_url=image_data_url,
         temperature=temperature,
         schema=build_scene_plan_schema(len(dialogue_lines)),
+        n_predict=max(220, 96 * len(dialogue_lines)),
     )
     return dialogue_lines, extract_scene_plan(response, dialogue_lines)
 
@@ -866,6 +880,50 @@ def load_reflow_plan_json(plan_path: Path) -> tuple[list[str], list[ReflowBubble
     return dialogue_lines, validate_reflow_plans(dialogue_lines, plans)
 
 
+def load_scene_plan_json(plan_path: Path) -> tuple[list[str], list[SceneBubblePlan]]:
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("scene plan JSON must be an object")
+    dialogue_lines = data.get("dialogue_lines")
+    bubbles = data.get("bubbles")
+    if not isinstance(dialogue_lines, list) or not all(isinstance(item, str) for item in dialogue_lines):
+        raise RuntimeError("scene plan JSON must include dialogue_lines")
+    if not isinstance(bubbles, list):
+        raise RuntimeError("scene plan JSON must include bubbles")
+    return dialogue_lines, extract_scene_plan(
+        {"choices": [{"message": {"content": json.dumps({"bubbles": bubbles}, ensure_ascii=False)}}]},
+        dialogue_lines,
+    )
+
+
+def compose_bubble_plans(
+    dialogue_lines: list[str],
+    scene_plans: list[SceneBubblePlan],
+    reflow_plans: list[ReflowBubblePlan],
+) -> list[BubblePlan]:
+    validate_reflow_plans(dialogue_lines, reflow_plans)
+    reflow_by_sentence_ids: dict[tuple[int, ...], ReflowBubblePlan] = {
+        tuple(plan.sentence_ids): plan for plan in reflow_plans
+    }
+    composed: list[BubblePlan] = []
+    for index, scene_plan in enumerate(scene_plans, start=1):
+        key = tuple(scene_plan.sentence_ids)
+        reflow_plan = reflow_by_sentence_ids.get(key)
+        if reflow_plan is None:
+            raise RuntimeError(
+                f"scene bubble {index} has sentence_ids with no matching reflow bubble: {list(scene_plan.sentence_ids)}"
+            )
+        composed.append(
+            BubblePlan(
+                anchor_x=scene_plan.anchor_x,
+                anchor_y=scene_plan.anchor_y,
+                sentence_ids=scene_plan.sentence_ids,
+                columns=reflow_plan.columns,
+            )
+        )
+    return sorted(composed, key=lambda plan: plan.sentence_ids[0])
+
+
 def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
     em = max(font_size, 24)
     char_step = max(24, int(round(em * 1.08)))
@@ -890,13 +948,19 @@ def compute_text_layout(
     font_size: int,
 ) -> dict[str, int]:
     metrics = build_text_metrics(font_size, plan.columns)
-    anchor_x = int(canvas_width * plan.anchor_x)
-    anchor_y = int(canvas_height * plan.anchor_y)
     char_step = metrics["char_step"]
     column_width = metrics["column_width"]
     column_gap = metrics["column_gap"]
     block_width = metrics["block_width"]
     block_height = metrics["block_height"]
+
+    if block_width > canvas_width or block_height > canvas_height:
+        raise RuntimeError("text block is larger than the image bounds")
+
+    raw_anchor_x = int(canvas_width * plan.anchor_x)
+    raw_anchor_y = int(canvas_height * plan.anchor_y)
+    anchor_x = min(canvas_width, max(block_width, raw_anchor_x))
+    anchor_y = min(max(0, raw_anchor_y), canvas_height - block_height)
 
     if anchor_x <= 0 or anchor_y < 0:
         raise RuntimeError("anchor point is outside the image")
@@ -907,9 +971,6 @@ def compute_text_layout(
     text_top = anchor_y
     text_right = anchor_x
     text_bottom = anchor_y + block_height
-    if text_left < 0 or text_top < 0:
-        raise RuntimeError("text block anchor would place vertical text outside the image")
-
     if text_left < 0 or text_top < 0 or text_right > canvas_width or text_bottom > canvas_height:
         raise RuntimeError("text block layout exceeds image bounds")
     return {

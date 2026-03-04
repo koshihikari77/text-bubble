@@ -121,7 +121,9 @@ cd /notebooks/text-bubble
 - `--server http://127.0.0.1:8080/v1`
 - `--model heretic`
 - `--dialogue "夜見のどこみてるのー？"`
-- `--font /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`
+- `--font assets/JKG-L_3.ttf`
+
+デフォルトでは `assets/JKG-L_3.ttf` を優先して使います。
 
 ## Reflow Prompt の検証
 
@@ -132,6 +134,30 @@ python3 scripts/test_reflow_prompt.py --indent 2
 ```
 
 このスクリプトは [`prompts/reflow_test_cases.json`](/storage/projects/text-bubble/prompts/reflow_test_cases.json) を読み、各文を `1 bubble = 1 request` で `reflow` して結果を JSON で出します。
+
+## `reflow` 済みから続ける
+
+`reflow` まで終わっている場合は、`scene` を別で取り、その 2 つを `bubble_render.py` に渡して最終 plan を合成できます。
+
+```bash
+./.venv/bin/python bubble_infer.py \
+  --stage scene \
+  --input ../imgs/00005716.png \
+  --plan-json out/scene.json \
+  --dialogue "夜見のどこみてるのー？"
+```
+
+```bash
+./.venv/bin/python bubble_render.py \
+  --input ../imgs/00005716.png \
+  --scene-json out/scene.json \
+  --reflow-json out/reflow.json \
+  --save-plan-json out/final_plan.json \
+  --output out/00005716_bubbled.png \
+  --font assets/JKG-L_3.ttf \
+  --bubble-asset assets/bubble_ellipse.svg \
+  --text-renderer browser
+```
 
 ## 画像ごとに `.txt` を書く
 

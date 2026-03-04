@@ -249,6 +249,13 @@ python3 scripts/test_reflow_prompt.py --indent 2
 - 括弧や引用のまとまりは比較的安定している
 - `って` や読点の直後でどこまでまとめるかはまだ揺れる
 
+実装上の注意:
+
+- `reflow` は `1 bubble = 1 request` で回すので、単体 bubble の検証ではその bubble 自身の整合だけを見る
+- 複数 bubble 全体の被覆チェックは、`reflow` 結果をまとめた最終検証で行う
+- `scene` / `full` は文数が増えると JSON 出力が長くなるので、`n_predict` は文数に応じて増やしている
+- `scene` の anchor が少し外れても、文字 block 自体が画像より大きくない限り、描画時に画像内へ収まる範囲まで最小限クランプする
+
 ## 実行例
 
 推論:
@@ -286,7 +293,35 @@ python3 scripts/test_reflow_prompt.py --indent 2
   --input imgs/00005716.png \
   --plan-json out/00005716_separate_plan.json \
   --output out/00005716_bubbled.png \
-  --font resources/JKG-L_3.ttf \
+  --font assets/JKG-L_3.ttf \
   --bubble-asset assets/bubble_ellipse.svg \
   --text-renderer browser
 ```
+
+`reflow` 済みから続ける場合は、`scene` を取ってから `bubble_render.py` に両方渡せます。
+
+```bash
+./.venv/bin/python bubble_infer.py \
+  --stage scene \
+  --input imgs/00005716.png \
+  --plan-json out/scene.json \
+  --dialogue "今日はもう帰ろうかな..."
+```
+
+```bash
+./.venv/bin/python bubble_render.py \
+  --input imgs/00005716.png \
+  --scene-json out/scene.json \
+  --reflow-json out/reflow.json \
+  --save-plan-json out/final_plan.json \
+  --output out/00005716_bubbled.png \
+  --font assets/JKG-L_3.ttf \
+  --bubble-asset assets/bubble_ellipse.svg \
+  --text-renderer browser
+```
+
+## Diagnose 用の例
+
+[`docs/dialogue_examples.txt`](/storage/projects/text-bubble/docs/dialogue_examples.txt) に 1 文から 5 文までの投入例を置いています。
+
+2026年3月4日時点では、`../imgs/00005716.png` に対してこの 1-5 文の例を `assignment -> reflow -> scene -> render` で通せることを確認しました。
