@@ -26,6 +26,8 @@ import numpy as np
 from PIL import Image
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
 FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
@@ -47,7 +49,7 @@ SVG_NS = "http://www.w3.org/2000/svg"
 
 ET.register_namespace("", SVG_NS)
 
-PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+PROMPTS_DIR = PROJECT_ROOT / "prompts"
 
 
 @dataclass
@@ -1040,7 +1042,12 @@ def resolve_bubble_asset(explicit: str | None) -> Path | None:
         candidates.append(Path(explicit))
     candidates.extend(
         [
-            Path(__file__).resolve().parent / "assets" / "bubble_ellipse.svg",
+            PROJECT_ROOT / "assets" / "bubble_ellipse.svg",
+            PROJECT_ROOT / "resources" / "bubble.svg",
+            PROJECT_ROOT / "resources" / "bubble.png",
+            PROJECT_ROOT / "resources" / "bubble_svg.txt",
+            PROJECT_ROOT / "imgs" / "bubble.svg",
+            PROJECT_ROOT / "imgs" / "bubble.png",
             Path("/notebooks/imgs/bubble.svg"),
             Path("/notebooks/imgs/bubble.png"),
             Path("/notebooks/resources/bubble.svg"),
@@ -1055,7 +1062,7 @@ def resolve_bubble_asset(explicit: str | None) -> Path | None:
 
 
 def resolve_chromium_executable() -> str | None:
-    browser_root = Path(__file__).resolve().parent / ".playwright-browsers"
+    browser_root = PROJECT_ROOT / ".playwright-browsers"
     candidates = sorted(browser_root.glob("chromium-*/chrome-linux64/chrome"))
     if candidates:
         return str(candidates[-1])
@@ -1366,7 +1373,7 @@ def render_text_overlay_browser(
     font_path: str | None,
     font_family: str | None,
 ) -> TextRenderResult:
-    browser_root = Path(__file__).resolve().parent / ".playwright-browsers"
+    browser_root = PROJECT_ROOT / ".playwright-browsers"
     if browser_root.exists():
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
     chromium_executable = resolve_chromium_executable()
@@ -1504,7 +1511,7 @@ def render_bubble(
     font_size: int,
     text_renderer: str,
 ) -> None:
-    browser_root = Path(__file__).resolve().parent / ".playwright-browsers"
+    browser_root = PROJECT_ROOT / ".playwright-browsers"
     if browser_root.exists():
         os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(browser_root))
     chromium_executable = resolve_chromium_executable()

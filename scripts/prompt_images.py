@@ -13,6 +13,8 @@ from pathlib import Path
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_IMAGE_DIR = ROOT_DIR / "imgs"
 
 
 def log(message: str) -> None:
@@ -23,7 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Send local images to llama-server using prompts loaded from system.txt and user.txt."
     )
-    parser.add_argument("--dir", default="/notebooks/imgs", help="Directory containing images and prompt files")
+    parser.add_argument(
+        "--dir",
+        default=str(DEFAULT_IMAGE_DIR),
+        help="Directory containing images and prompt files (default: <project>/imgs)",
+    )
     parser.add_argument("--system", help="Path to system prompt file (default: <dir>/system.txt)")
     parser.add_argument("--user", help="Path to user prompt file (default: <dir>/user.txt)")
     parser.add_argument("--server", default="http://127.0.0.1:8080/v1", help="llama-server base URL")

@@ -10,11 +10,11 @@
 
 ## ディレクトリ
 
-- プロジェクトルート: `/storage/projects/text-bubble`
-- Python 仮想環境: [`/.venv`](/storage/projects/text-bubble/.venv)
-- Playwright ブラウザ: [`/.playwright-browsers`](/storage/projects/text-bubble/.playwright-browsers)
-- `llama.cpp`: [`/llama.cpp`](/storage/projects/text-bubble/llama.cpp)
-- モデル: [`/models/heretic`](/storage/projects/text-bubble/models/heretic)
+- プロジェクトルート: このフォルダ自身
+- Python 仮想環境: `.venv`
+- Playwright ブラウザ: `.playwright-browsers`
+- `llama.cpp`: `llama.cpp/`
+- モデル: `models/heretic/`
 
 ## Python 環境
 
@@ -108,22 +108,22 @@ cmake --build llama.cpp/build --target llama-server -j 8
 
 ## ユーザー素材
 
-現在使っている外部素材:
+現在使っている素材置き場の候補:
 
-- 吹き出し PNG: [bubble.png](/notebooks/resources/bubble.png)
-- 吹き出し SVG: [bubble.svg](/notebooks/resources/bubble.svg)
-- 吹き出し SVG コード: [bubble_svg.txt](/notebooks/resources/bubble_svg.txt)
-- フォント: [JKG-L_3.ttf](/notebooks/resources/JKG-L_3.ttf)
+- repo 内 `resources/`
+- repo 内 `imgs/`
+- 互換用の `/notebooks/resources`
+- 互換用の `/notebooks/imgs`
 
 ## 出力先
 
-ユーザー確認用の入出力は `/notebooks/imgs` を使う運用にしている。
+移設しやすくするため、現在は repo 内の `imgs/`, `resources/`, `out/` を基本の作業ディレクトリとしている。
 
 例:
 
-- 入力画像: [00005716.png](/notebooks/imgs/00005716.png)
-- 出力画像: [00005716_bubbled.png](/notebooks/imgs/00005716_bubbled.png)
-- plan JSON: [00005716_plan.json](/notebooks/imgs/00005716_plan.json)
+- 入力画像: `imgs/00005716.png`
+- 出力画像: `out/00005716_bubbled.png`
+- plan JSON: `out/00005716_plan.json`
 
 ## 補助スクリプト
 

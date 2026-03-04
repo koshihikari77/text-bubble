@@ -144,6 +144,11 @@
 
 - 明示された `--bubble-asset`
 - [`assets/bubble_ellipse.svg`](/storage/projects/text-bubble/assets/bubble_ellipse.svg)
+- `resources/bubble.svg`
+- `resources/bubble.png`
+- `resources/bubble_svg.txt`
+- `imgs/bubble.svg`
+- `imgs/bubble.png`
 - `/notebooks/imgs/bubble.svg`
 - `/notebooks/imgs/bubble.png`
 - `/notebooks/resources/bubble.svg`
@@ -250,8 +255,8 @@ python3 scripts/test_reflow_prompt.py --indent 2
 
 ```bash
 ./.venv/bin/python bubble_infer.py \
-  --input /notebooks/imgs/00005716.png \
-  --plan-json /notebooks/imgs/00005716_separate_plan.json \
+  --input imgs/00005716.png \
+  --plan-json out/00005716_separate_plan.json \
   --dialogue "夜見のどこみてるのー？"
 ```
 
@@ -278,10 +283,10 @@ python3 scripts/test_reflow_prompt.py --indent 2
 
 ```bash
 ./.venv/bin/python bubble_render.py \
-  --input /notebooks/imgs/00005716.png \
-  --plan-json /notebooks/imgs/00005716_separate_plan.json \
-  --output /notebooks/imgs/00005716_bubbled.png \
-  --font /notebooks/resources/JKG-L_3.ttf \
-  --bubble-asset /storage/projects/text-bubble/assets/bubble_ellipse.svg \
+  --input imgs/00005716.png \
+  --plan-json out/00005716_separate_plan.json \
+  --output out/00005716_bubbled.png \
+  --font resources/JKG-L_3.ttf \
+  --bubble-asset assets/bubble_ellipse.svg \
   --text-renderer browser
 ```

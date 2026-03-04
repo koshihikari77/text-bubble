@@ -37,6 +37,12 @@ PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
   ~/.local/bin/uv run --python .venv/bin/python playwright install-deps chromium
 ```
 
+同じ環境を手早く作り直す場合は次でも構いません。
+
+```bash
+./scripts/setup_local_env.sh
+```
+
 ## llama.cpp のビルド
 
 ```bash
@@ -81,6 +87,21 @@ MODEL_ALIAS=heretic \
 ./scripts/run_server.sh
 ```
 
+## `/notebooks` へ移すとき
+
+このプロジェクトは基本的に repo 相対パスで動くので、`/notebooks/text-bubble` のような別パスへ移しても動かせます。移設時の注意点は次です。
+
+- `.venv` は移動に弱いので、移設先で作り直す
+- `imgs/`, `resources/`, `out/` を repo 配下の作業ディレクトリとして使う
+- bubble 素材は `assets/` のほか `resources/` や `imgs/` に置いても拾える
+
+移設後は次を実行します。
+
+```bash
+cd /notebooks/text-bubble
+./scripts/setup_local_env.sh
+```
+
 ## 画像から吹き出し生成
 
 ```bash
@@ -117,11 +138,12 @@ python3 scripts/test_reflow_prompt.py --indent 2
 `system.txt` と `user.txt` をファイルから読み、その内容を見ずに画像ごとの説明結果を同名 `.txt` へ保存する用途です。
 
 ```bash
-python3 scripts/prompt_images.py --dir /notebooks/imgs
+python3 scripts/prompt_images.py
 ```
 
 主なオプション:
 
+- `--dir /path/to/imgs`
 - `--system /path/to/system.txt`
 - `--user /path/to/user.txt`
 - `--overwrite`
