@@ -18,6 +18,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,8 @@ FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 
-# Speech-bubble sizing based on the text block.
-# The LLM-provided anchor remains the text block's top-right corner.
+# 吹き出しサイズは最終的な文字 bbox から決める。
+# LLM が返す anchor は常に「文字ブロック右上」として扱う。
 BUBBLE_INNER_WIDTH_RATIO = 0.62
 BUBBLE_INNER_HEIGHT_RATIO = 0.72
 TEXT_COLUMN_GAP_RATIO = 0.1
@@ -46,15 +47,7 @@ SVG_NS = "http://www.w3.org/2000/svg"
 
 ET.register_namespace("", SVG_NS)
 
-
-SYSTEM_PROMPT = """You are a manga vertical speech-bubble planner.
-Given one image and one fixed set of Japanese dialogue lines, return exactly one JSON object and nothing else.
-Never output markdown fences.
-Never output prose outside the JSON object.
-Respect every required field in the schema.
-The dialogue text is fixed. Do not rewrite, omit, normalize, or add characters.
-Choose safe anchor points for vertical text blocks.
-Avoid covering faces or the most important action area."""
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
 @dataclass
@@ -63,6 +56,27 @@ class BubblePlan:
     anchor_y: float
     sentence_ids: list[int]
     columns: list[str]
+
+
+@dataclass
+class AssignmentBubblePlan:
+    bubble_id: str
+    sentence_ids: list[int]
+
+
+@dataclass
+class ReflowBubblePlan:
+    bubble_id: str
+    sentence_ids: list[int]
+    columns: list[str]
+
+
+@dataclass
+class SceneBubblePlan:
+    bubble_id: str
+    anchor_x: float
+    anchor_y: float
+    sentence_ids: list[int]
 
 
 @dataclass
@@ -85,6 +99,66 @@ def plans_payload(dialogue_lines: list[str], plans: list[BubblePlan]) -> dict[st
         "dialogue_lines": dialogue_lines,
         "bubbles": [bubble_plan_to_dict(plan) for plan in plans],
     }
+
+
+def assignment_bubble_plan_to_dict(plan: AssignmentBubblePlan) -> dict[str, Any]:
+    return {
+        "bubble_id": plan.bubble_id,
+        "sentence_ids": plan.sentence_ids,
+    }
+
+
+def assignment_plans_payload(dialogue_lines: list[str], plans: list[AssignmentBubblePlan]) -> dict[str, Any]:
+    return {
+        "dialogue_lines": dialogue_lines,
+        "bubbles": [assignment_bubble_plan_to_dict(plan) for plan in plans],
+    }
+
+
+def reflow_bubble_plan_to_dict(plan: ReflowBubblePlan) -> dict[str, Any]:
+    return {
+        "bubble_id": plan.bubble_id,
+        "sentence_ids": plan.sentence_ids,
+        "columns": plan.columns,
+    }
+
+
+def reflow_plans_payload(dialogue_lines: list[str], plans: list[ReflowBubblePlan]) -> dict[str, Any]:
+    return {
+        "dialogue_lines": dialogue_lines,
+        "bubbles": [reflow_bubble_plan_to_dict(plan) for plan in plans],
+    }
+
+
+def scene_bubble_plan_to_dict(plan: SceneBubblePlan) -> dict[str, Any]:
+    return {
+        "bubble_id": plan.bubble_id,
+        "anchor_x": plan.anchor_x,
+        "anchor_y": plan.anchor_y,
+        "sentence_ids": plan.sentence_ids,
+    }
+
+
+def scene_plans_payload(dialogue_lines: list[str], plans: list[SceneBubblePlan]) -> dict[str, Any]:
+    return {
+        "dialogue_lines": dialogue_lines,
+        "bubbles": [scene_bubble_plan_to_dict(plan) for plan in plans],
+    }
+
+
+@lru_cache(maxsize=None)
+def load_prompt_text(filename: str) -> str:
+    path = PROMPTS_DIR / filename
+    return path.read_text(encoding="utf-8").strip()
+
+
+@lru_cache(maxsize=1)
+def load_reflow_examples() -> list[dict[str, Any]]:
+    path = PROMPTS_DIR / "reflow_examples.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise RuntimeError("reflow_examples.json must be an array")
+    return data
 
 
 def parse_args() -> argparse.Namespace:
@@ -140,32 +214,157 @@ def split_dialogue_lines(dialogue: str) -> list[str]:
 
 def build_user_prompt(dialogue_lines: list[str]) -> str:
     numbered_lines = "\n".join(f"{index}. {line}" for index, line in enumerate(dialogue_lines, start=1))
-    return textwrap.dedent(
+    template = load_prompt_text("planner_user.txt")
+    return template.format(numbered_lines=numbered_lines, num_lines=len(dialogue_lines))
+
+
+def build_scene_user_prompt(dialogue_lines: list[str]) -> str:
+    numbered_lines = "\n".join(f"{index}. {line}" for index, line in enumerate(dialogue_lines, start=1))
+    template = load_prompt_text("scene_user.txt")
+    return template.format(numbered_lines=numbered_lines, num_lines=len(dialogue_lines))
+
+
+def build_assignment_plans(dialogue_lines: list[str]) -> list[AssignmentBubblePlan]:
+    # 段1では各セリフ行をそのまま 1 bubble に対応させる。
+    return [
+        AssignmentBubblePlan(
+            bubble_id=f"b{index}",
+            sentence_ids=[index],
+        )
+        for index in range(1, len(dialogue_lines) + 1)
+    ]
+
+
+def text_for_sentence_ids(dialogue_lines: list[str], sentence_ids: list[int]) -> str:
+    return "".join(dialogue_lines[sentence_id - 1] for sentence_id in sentence_ids)
+
+
+def build_reflow_user_prompt(
+    dialogue_lines: list[str],
+    assignment_plan: AssignmentBubblePlan,
+) -> str:
+    text = text_for_sentence_ids(dialogue_lines, assignment_plan.sentence_ids)
+    sentence_ids = ", ".join(str(item) for item in assignment_plan.sentence_ids)
+    bubble_text = textwrap.dedent(
         f"""
-        Analyze this image and place vertical manga speech bubbles for the fixed dialogue lines below.
-
-        Fixed dialogue lines:
-        {numbered_lines}
-
-        Requirements:
-        - Return one JSON object with exactly one key: "bubbles".
-        - "bubbles" must be an array of 1 to {len(dialogue_lines)} bubble objects.
-        - Each bubble object must contain exactly: "anchor_x", "anchor_y", "sentence_ids", "columns".
-        - "anchor_x" and "anchor_y" are normalized 0.0 to 1.0 image coordinates.
-        - The anchor is the top-right corner of the text block, not the bubble outline.
-        - "sentence_ids" must contain consecutive 1-based line indices from the list above.
-        - Every dialogue line must appear exactly once across all bubbles.
-        - Keep the original line order. Do not reorder lines.
-        - "columns" must be ordered from right to left.
-        - When all strings in "columns" are concatenated, they must exactly equal the assigned dialogue line(s) joined with no separator changes.
-        - Split into natural manga-style vertical columns.
-        - Prefer columns of roughly 3 to 7 Japanese characters.
-        - Avoid over-fragmented output. Do not create many 1 or 2 character columns unless unavoidable.
-        - Prefer one line per bubble unless two adjacent short lines clearly fit better together.
-        - Do not add extra keys.
-        - Do not use markdown code fences.
+        - bubble_id: {assignment_plan.bubble_id}
+        - sentence_ids: [{sentence_ids}]
+        - text: {text}
         """
     ).strip()
+    examples = []
+    for example in load_reflow_examples():
+        examples.append(
+            textwrap.dedent(
+                f"""
+                Input text: {example["text"]}
+                Output columns: {json.dumps(example["columns"], ensure_ascii=False)}
+                """
+            ).strip()
+        )
+    examples_text = "\n\n".join(examples)
+    template = load_prompt_text("reflow_user.txt")
+    return template.format(examples_text=examples_text, bubble_text=bubble_text)
+
+
+def build_reflow_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "bubble_id": {"type": "string", "minLength": 1, "maxLength": 32},
+            "columns": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "items": {"type": "string", "minLength": 1, "maxLength": 32},
+            },
+        },
+        "required": ["bubble_id", "columns"],
+    }
+
+
+def extract_reflow_plan(
+    response: dict[str, Any],
+    dialogue_lines: list[str],
+    assignment_plan: AssignmentBubblePlan,
+) -> ReflowBubblePlan:
+    message = response["choices"][0]["message"]["content"]
+    if isinstance(message, list):
+        parts = [chunk.get("text", "") for chunk in message if isinstance(chunk, dict) and isinstance(chunk.get("text"), str)]
+        message = "".join(parts)
+    if not isinstance(message, str):
+        raise RuntimeError("unexpected response content type")
+    raw_message = message
+    message = message.strip()
+    if message.startswith("```"):
+        message = message.strip("`")
+        if message.startswith("json"):
+            message = message[4:]
+        message = message.strip()
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"model returned invalid JSON: {summarize_raw_output(raw_message)}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"unexpected JSON payload type: {type(data).__name__}")
+    bubble_id = data.get("bubble_id")
+    columns = data.get("columns")
+    if not isinstance(bubble_id, str) or not bubble_id.strip():
+        raise RuntimeError("reflow output must include a non-empty bubble_id")
+    bubble_id = bubble_id.strip()
+    if bubble_id != assignment_plan.bubble_id:
+        raise RuntimeError(f"unexpected bubble_id in reflow output: {bubble_id}")
+    if not isinstance(columns, list) or not columns or not all(isinstance(item, str) and item for item in columns):
+        raise RuntimeError("reflow output must include a non-empty columns array")
+    plan = ReflowBubblePlan(
+        bubble_id=bubble_id,
+        sentence_ids=assignment_plan.sentence_ids,
+        columns=columns,
+    )
+    return validate_reflow_plans(dialogue_lines, [plan])[0]
+
+
+def infer_reflow_columns_for_bubble(
+    server: str,
+    model: str,
+    dialogue_lines: list[str],
+    assignment_plan: AssignmentBubblePlan,
+    temperature: float,
+) -> ReflowBubblePlan:
+    prompt = build_reflow_user_prompt(dialogue_lines, assignment_plan)
+    response = post_chat_completion(
+        server=server,
+        model=model,
+        prompt=prompt,
+        image_data_url=None,
+        temperature=temperature,
+        schema=build_reflow_schema(),
+        system_prompt=load_prompt_text("reflow_system.txt"),
+        enable_thinking=True,
+    )
+    return extract_reflow_plan(response, dialogue_lines, assignment_plan)
+
+
+def reflow_assignment_plans(
+    dialogue_lines: list[str],
+    assignment_plans: list[AssignmentBubblePlan],
+    server: str,
+    model: str,
+    temperature: float,
+) -> list[ReflowBubblePlan]:
+    reflow_plans: list[ReflowBubblePlan] = []
+    for assignment_plan in assignment_plans:
+        reflow_plans.append(
+            infer_reflow_columns_for_bubble(
+                server=server,
+                model=model,
+                dialogue_lines=dialogue_lines,
+                assignment_plan=assignment_plan,
+                temperature=temperature,
+            )
+        )
+    return validate_reflow_plans(dialogue_lines, reflow_plans)
 
 
 def build_plan_schema(num_lines: int) -> dict[str, Any]:
@@ -212,14 +411,61 @@ def build_plan_schema(num_lines: int) -> dict[str, Any]:
     }
 
 
+def build_scene_plan_schema(num_lines: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "bubbles": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": num_lines,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "bubble_id": {
+                            "type": "string",
+                            "minLength": 2,
+                            "maxLength": 32,
+                        },
+                        "anchor_x": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "anchor_y": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "sentence_ids": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": num_lines,
+                            "items": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": num_lines,
+                            },
+                        },
+                    },
+                    "required": ["bubble_id", "anchor_x", "anchor_y", "sentence_ids"],
+                },
+            },
+        },
+        "required": ["bubbles"],
+    }
+
+
 def post_chat_completion(
     server: str,
     model: str,
     prompt: str,
-    image_data_url: str,
+    image_data_url: str | None,
     temperature: float,
     schema: dict[str, Any],
+    system_prompt: str | None = None,
+    enable_thinking: bool = False,
 ) -> dict[str, Any]:
+    # 推論結果は自由文ではなく JSON schema 準拠で返させる。
+    if system_prompt is None:
+        system_prompt = load_prompt_text("planner_system.txt")
+    user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    if image_data_url is not None:
+        user_content.append({"type": "image_url", "image_url": {"url": image_data_url}})
     body = {
         "model": model,
         "temperature": temperature,
@@ -228,17 +474,14 @@ def post_chat_completion(
         "seed": 42,
         "reasoning_format": "none",
         "chat_template_kwargs": {
-            "enable_thinking": False,
+            "enable_thinking": enable_thinking,
         },
         "json_schema": schema,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
+                "content": user_content,
             },
         ],
     }
@@ -284,6 +527,7 @@ def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[Bu
     if not isinstance(bubbles, list) or not bubbles:
         raise RuntimeError("plan must include a non-empty bubbles array")
 
+    # LLM 出力をそのまま信用せず、文順・全文使用・columns の完全復元をここで検証する。
     used_sentence_ids: list[int] = []
     plans: list[BubblePlan] = []
     for index, bubble in enumerate(bubbles, start=1):
@@ -311,6 +555,121 @@ def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[Bu
                 columns=normalized_columns,
             )
         )
+
+    expected_ids = list(range(1, len(dialogue_lines) + 1))
+    if sorted(used_sentence_ids) != expected_ids:
+        raise RuntimeError("bubbles must cover every dialogue line exactly once")
+    return plans
+
+
+def extract_scene_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[SceneBubblePlan]:
+    message = response["choices"][0]["message"]["content"]
+    if isinstance(message, list):
+        parts = [chunk.get("text", "") for chunk in message if isinstance(chunk, dict)]
+        message = "".join(parts)
+    if not isinstance(message, str):
+        raise RuntimeError("unexpected response content type")
+    raw_message = message
+    message = message.strip()
+    if message.startswith("```"):
+        message = message.strip("`")
+        if message.startswith("json"):
+            message = message[4:]
+        message = message.strip()
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"model returned invalid JSON: {summarize_raw_output(raw_message)}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"unexpected JSON payload type: {type(data).__name__}")
+    bubbles = data.get("bubbles")
+    if not isinstance(bubbles, list) or not bubbles:
+        raise RuntimeError("scene plan must include a non-empty bubbles array")
+
+    # scene plan の段階では文の割当と anchor だけを検証する。
+    used_sentence_ids: list[int] = []
+    seen_bubble_ids: set[str] = set()
+    plans: list[SceneBubblePlan] = []
+    for index, bubble in enumerate(bubbles, start=1):
+        if not isinstance(bubble, dict):
+            raise RuntimeError(f"bubble {index} must be an object")
+        bubble_id = bubble.get("bubble_id")
+        sentence_ids = bubble.get("sentence_ids")
+        if not isinstance(bubble_id, str) or not bubble_id.strip():
+            raise RuntimeError(f"bubble {index} must include a non-empty bubble_id")
+        bubble_id = bubble_id.strip()
+        if bubble_id in seen_bubble_ids:
+            raise RuntimeError(f"bubble_id must be unique: {bubble_id}")
+        seen_bubble_ids.add(bubble_id)
+        if not isinstance(sentence_ids, list) or not sentence_ids:
+            raise RuntimeError(f"bubble {index} must include a non-empty sentence_ids array")
+        normalized_ids = [int(item) for item in sentence_ids]
+        if normalized_ids != list(range(normalized_ids[0], normalized_ids[0] + len(normalized_ids))):
+            raise RuntimeError(f"bubble {index} sentence_ids must be consecutive")
+        used_sentence_ids.extend(normalized_ids)
+        plans.append(
+            SceneBubblePlan(
+                bubble_id=bubble_id,
+                anchor_x=float(bubble["anchor_x"]),
+                anchor_y=float(bubble["anchor_y"]),
+                sentence_ids=normalized_ids,
+            )
+        )
+
+    expected_ids = list(range(1, len(dialogue_lines) + 1))
+    if sorted(used_sentence_ids) != expected_ids:
+        raise RuntimeError("bubbles must cover every dialogue line exactly once")
+    return plans
+
+
+def validate_assignment_plans(dialogue_lines: list[str], plans: list[AssignmentBubblePlan]) -> list[AssignmentBubblePlan]:
+    used_sentence_ids: list[int] = []
+    seen_bubble_ids: set[str] = set()
+    for index, plan in enumerate(plans, start=1):
+        if not plan.bubble_id.strip():
+            raise RuntimeError(f"bubble {index} must include a non-empty bubble_id")
+        if plan.bubble_id in seen_bubble_ids:
+            raise RuntimeError(f"bubble_id must be unique: {plan.bubble_id}")
+        seen_bubble_ids.add(plan.bubble_id)
+        normalized_ids = [int(item) for item in plan.sentence_ids]
+        if not normalized_ids:
+            raise RuntimeError(f"bubble {index} must include a non-empty sentence_ids array")
+        if normalized_ids != list(range(normalized_ids[0], normalized_ids[0] + len(normalized_ids))):
+            raise RuntimeError(f"bubble {index} sentence_ids must be consecutive")
+        used_sentence_ids.extend(normalized_ids)
+
+    expected_ids = list(range(1, len(dialogue_lines) + 1))
+    if sorted(used_sentence_ids) != expected_ids:
+        raise RuntimeError("bubbles must cover every dialogue line exactly once")
+    return plans
+
+
+def validate_reflow_plans(dialogue_lines: list[str], plans: list[ReflowBubblePlan]) -> list[ReflowBubblePlan]:
+    used_sentence_ids: list[int] = []
+    seen_bubble_ids: set[str] = set()
+    punctuation_only_chars = set("、。，．？！?!…ー〜・「」『』（）()[]【】〈〉《》")
+    for index, plan in enumerate(plans, start=1):
+        if not plan.bubble_id.strip():
+            raise RuntimeError(f"bubble {index} must include a non-empty bubble_id")
+        if plan.bubble_id in seen_bubble_ids:
+            raise RuntimeError(f"bubble_id must be unique: {plan.bubble_id}")
+        seen_bubble_ids.add(plan.bubble_id)
+        normalized_ids = [int(item) for item in plan.sentence_ids]
+        if not normalized_ids:
+            raise RuntimeError(f"bubble {index} must include a non-empty sentence_ids array")
+        if normalized_ids != list(range(normalized_ids[0], normalized_ids[0] + len(normalized_ids))):
+            raise RuntimeError(f"bubble {index} sentence_ids must be consecutive")
+        text = text_for_sentence_ids(dialogue_lines, normalized_ids)
+        if not plan.columns:
+            raise RuntimeError(f"bubble {index} must include a non-empty columns array")
+        for column in plan.columns:
+            if not column.strip():
+                raise RuntimeError(f"bubble {index} contains an empty column")
+            if all(char in punctuation_only_chars for char in column):
+                raise RuntimeError(f"bubble {index} contains a punctuation-only column")
+        if "".join(plan.columns) != text:
+            raise RuntimeError(f"bubble {index} columns do not reconstruct the assigned dialogue")
+        used_sentence_ids.extend(normalized_ids)
 
     expected_ids = list(range(1, len(dialogue_lines) + 1))
     if sorted(used_sentence_ids) != expected_ids:
@@ -348,10 +707,89 @@ def infer_bubble_plans(
     return dialogue_lines, extract_plan(response, dialogue_lines)
 
 
+def infer_scene_bubble_plans(
+    image_path: Path,
+    server: str,
+    model: str,
+    dialogue: str,
+    temperature: float,
+) -> tuple[list[str], list[SceneBubblePlan]]:
+    dialogue_lines = split_dialogue_lines(dialogue)
+    if not dialogue_lines:
+        raise RuntimeError("dialogue must contain at least one non-empty line")
+    image_data_url = encode_image_as_data_url(image_path)
+    prompt = build_scene_user_prompt(dialogue_lines)
+    response = post_chat_completion(
+        server=server,
+        model=model,
+        prompt=prompt,
+        image_data_url=image_data_url,
+        temperature=temperature,
+        schema=build_scene_plan_schema(len(dialogue_lines)),
+    )
+    return dialogue_lines, extract_scene_plan(response, dialogue_lines)
+
+
+def infer_assignment_plans(dialogue: str) -> tuple[list[str], list[AssignmentBubblePlan]]:
+    dialogue_lines = split_dialogue_lines(dialogue)
+    if not dialogue_lines:
+        raise RuntimeError("dialogue must contain at least one non-empty line")
+    plans = build_assignment_plans(dialogue_lines)
+    return dialogue_lines, validate_assignment_plans(dialogue_lines, plans)
+
+
+def infer_reflow_plans(
+    server: str,
+    model: str,
+    dialogue: str,
+    temperature: float,
+    assignment_plans: list[AssignmentBubblePlan] | None = None,
+) -> tuple[list[str], list[ReflowBubblePlan]]:
+    dialogue_lines = split_dialogue_lines(dialogue)
+    if not dialogue_lines:
+        raise RuntimeError("dialogue must contain at least one non-empty line")
+    validated_assignments = validate_assignment_plans(
+        dialogue_lines,
+        assignment_plans if assignment_plans is not None else build_assignment_plans(dialogue_lines),
+    )
+    plans = reflow_assignment_plans(
+        dialogue_lines,
+        validated_assignments,
+        server=server,
+        model=model,
+        temperature=temperature,
+    )
+    return dialogue_lines, validate_reflow_plans(dialogue_lines, plans)
+
+
 def save_plan_json(plan_path: Path, dialogue_lines: list[str], plans: list[BubblePlan]) -> None:
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_text(
         json.dumps(plans_payload(dialogue_lines, plans), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def save_assignment_plan_json(plan_path: Path, dialogue_lines: list[str], plans: list[AssignmentBubblePlan]) -> None:
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(assignment_plans_payload(dialogue_lines, plans), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def save_reflow_plan_json(plan_path: Path, dialogue_lines: list[str], plans: list[ReflowBubblePlan]) -> None:
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(reflow_plans_payload(dialogue_lines, plans), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def save_scene_plan_json(plan_path: Path, dialogue_lines: list[str], plans: list[SceneBubblePlan]) -> None:
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        json.dumps(scene_plans_payload(dialogue_lines, plans), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -367,6 +805,63 @@ def load_plan_json(plan_path: Path) -> tuple[list[str], list[BubblePlan]]:
     if not isinstance(bubbles, list):
         raise RuntimeError("plan JSON must include bubbles")
     return dialogue_lines, extract_plan({"choices": [{"message": {"content": json.dumps({"bubbles": bubbles}, ensure_ascii=False)}}]}, dialogue_lines)
+
+
+def load_assignment_plan_json(plan_path: Path) -> tuple[list[str], list[AssignmentBubblePlan]]:
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("assignment plan JSON must be an object")
+    dialogue_lines = data.get("dialogue_lines")
+    bubbles = data.get("bubbles")
+    if not isinstance(dialogue_lines, list) or not all(isinstance(item, str) for item in dialogue_lines):
+        raise RuntimeError("assignment plan JSON must include dialogue_lines")
+    if not isinstance(bubbles, list):
+        raise RuntimeError("assignment plan JSON must include bubbles")
+    plans: list[AssignmentBubblePlan] = []
+    for index, bubble in enumerate(bubbles, start=1):
+        if not isinstance(bubble, dict):
+            raise RuntimeError(f"bubble {index} must be an object")
+        bubble_id = bubble.get("bubble_id")
+        sentence_ids = bubble.get("sentence_ids")
+        if not isinstance(bubble_id, str):
+            raise RuntimeError(f"bubble {index} must include bubble_id")
+        if not isinstance(sentence_ids, list):
+            raise RuntimeError(f"bubble {index} must include sentence_ids")
+        plans.append(AssignmentBubblePlan(bubble_id=bubble_id, sentence_ids=[int(item) for item in sentence_ids]))
+    return dialogue_lines, validate_assignment_plans(dialogue_lines, plans)
+
+
+def load_reflow_plan_json(plan_path: Path) -> tuple[list[str], list[ReflowBubblePlan]]:
+    data = json.loads(plan_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError("reflow plan JSON must be an object")
+    dialogue_lines = data.get("dialogue_lines")
+    bubbles = data.get("bubbles")
+    if not isinstance(dialogue_lines, list) or not all(isinstance(item, str) for item in dialogue_lines):
+        raise RuntimeError("reflow plan JSON must include dialogue_lines")
+    if not isinstance(bubbles, list):
+        raise RuntimeError("reflow plan JSON must include bubbles")
+    plans: list[ReflowBubblePlan] = []
+    for index, bubble in enumerate(bubbles, start=1):
+        if not isinstance(bubble, dict):
+            raise RuntimeError(f"bubble {index} must be an object")
+        bubble_id = bubble.get("bubble_id")
+        sentence_ids = bubble.get("sentence_ids")
+        columns = bubble.get("columns")
+        if not isinstance(bubble_id, str):
+            raise RuntimeError(f"bubble {index} must include bubble_id")
+        if not isinstance(sentence_ids, list):
+            raise RuntimeError(f"bubble {index} must include sentence_ids")
+        if not isinstance(columns, list) or not all(isinstance(item, str) for item in columns):
+            raise RuntimeError(f"bubble {index} must include columns")
+        plans.append(
+            ReflowBubblePlan(
+                bubble_id=bubble_id,
+                sentence_ids=[int(item) for item in sentence_ids],
+                columns=columns,
+            )
+        )
+    return dialogue_lines, validate_reflow_plans(dialogue_lines, plans)
 
 
 def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
@@ -404,6 +899,7 @@ def compute_text_layout(
     if anchor_x <= 0 or anchor_y < 0:
         raise RuntimeError("anchor point is outside the image")
 
+    # anchor を基準に、縦書きブロック全体の矩形を先に確定する。
     em = max(font_size, 24)
     text_left = anchor_x - block_width
     text_top = anchor_y
@@ -444,6 +940,7 @@ def compute_bubble_layout(
     text_width = text_right - text_left
     text_height = text_bottom - text_top
     em = max(font_size, 24)
+    # 吹き出しは仮想テキスト矩形ではなく、実際に描いた文字 alpha bbox に余白を足して決める。
     horizontal_padding = max(outline_width * 6, int(round(em * 1.35)))
     vertical_padding = max(outline_width * 4, int(round(em * 1.0)))
     bubble_width = text_width + horizontal_padding * 2
@@ -570,6 +1067,7 @@ def flood_fill_outside_open_regions(grayscale: np.ndarray, outline_cutoff: int) 
     outside = np.zeros((height, width), dtype=bool)
     queue: deque[tuple[int, int]] = deque()
 
+    # 外周から白領域を塗りつぶし、輪郭線で閉じた内側だけを fill 候補として残す。
     def enqueue_if_open(x: int, y: int) -> None:
         if 0 <= x < width and 0 <= y < height and not outside[y, x] and grayscale[y, x] >= outline_cutoff:
             outside[y, x] = True
@@ -648,6 +1146,7 @@ def warp_svg_source_to_aspect(svg_source: str, target_aspect: float) -> str:
         else:
             drawable_nodes.append(copy.deepcopy(child))
 
+    # viewBox 中心を保ったまま x または y のみを伸縮して、素材の印象を壊しにくくする。
     if target_aspect >= source_aspect:
         target_w = vb_h * target_aspect
         target_h = vb_h
@@ -746,6 +1245,7 @@ def build_render_html(
 ) -> str:
     text_columns = []
     for index, column in enumerate(plan.columns):
+        # columns は右から左に並ぶ前提なので、left は右端基準で計算する。
         left = text_layout["block_width"] - text_layout["column_width"] - index * (
             text_layout["column_width"] + text_layout["column_gap"]
         )
@@ -891,6 +1391,7 @@ def render_text_overlay_browser(
         page.set_content(html_doc, wait_until="load")
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(150)
+        # HTML/CSS で縦書きを描いて、そのまま透過 PNG 化して bbox を拾う。
         overlay_bytes = page.screenshot(omit_background=True)
         page.close()
         browser.close()
@@ -939,6 +1440,7 @@ def render_text_overlay_pango(
             draw_y = cell_top + (text_layout["char_step"] - logical_h) / 2.0 - logical_y
 
             ctx.save()
+            # Pango は縦書きの長音処理が難しいので、ー だけ手動で 90 度回転させる。
             if glyph == "ー":
                 cell_cx = column_left + text_layout["column_width"] / 2.0
                 cell_cy = cell_top + text_layout["char_step"] / 2.0
@@ -1044,6 +1546,7 @@ def render_bubble(
                 Image.Resampling.LANCZOS,
             )
         else:
+            # SVG は毎回 target aspect に warp してから rasterize する。
             bubble_page = browser.new_page(
                 viewport={"width": bubble_layout["bubble_width"], "height": bubble_layout["bubble_height"]},
                 device_scale_factor=1,
@@ -1069,6 +1572,7 @@ def render_bubble(
             bubble_page.close()
         browser.close()
 
+    # 吹き出しを先、文字を後に重ねることで文字が輪郭や塗りに埋もれないようにする。
     alpha_composite_clipped(base, bubble_image, bubble_layout["bubble_left"], bubble_layout["bubble_top"])
     base.alpha_composite(text_overlay.image)
     if output_path.suffix.lower() in {".jpg", ".jpeg"}:
@@ -1106,6 +1610,7 @@ def render_bubbles(
     temp_dir = output_path.parent / ".tmp-bubble-render"
     temp_dir.mkdir(parents=True, exist_ok=True)
     temp_paths: list[Path] = []
+    # 複数吹き出しは前段の出力を次段の入力にして順番に焼き込む。
     for index, plan in enumerate(plans, start=1):
         target = output_path if index == len(plans) else temp_dir / f"render_{index:02d}.png"
         render_bubble(

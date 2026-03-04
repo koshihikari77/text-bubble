@@ -13,6 +13,23 @@
 1. `Heretic` に画像とセリフ行を渡して `plan JSON` を作る
 2. `plan JSON` と元画像から吹き出しを描画する
 
+2026年3月4日時点では、推論を一気にやる形から、段階的に分けて検証できる形へ寄せています。特に `reflow` は画像付き推論から切り離し、テキストだけで列分割を評価できるようにしています。
+
+## 段階分割
+
+現在は次の 4 段を扱えます。
+
+1. `assignment`
+   入力文をどの吹き出しへ入れるかを決める。現状は決定論で `1 行 = 1 bubble`。
+2. `reflow`
+   各吹き出しの本文を、右から左の縦書き列 `columns` に分ける。ここは `1 bubble = 1 request` で LLM を呼ぶ。
+3. `scene`
+   画像を見て `anchor_x`, `anchor_y` と `sentence_ids` を返す旧来寄りの段。
+4. `full`
+   画像を見て `anchor_x`, `anchor_y`, `sentence_ids`, `columns` を一度に返す従来フロー。
+
+今の主な関心は `assignment -> reflow` までを別段で安定化することです。`reflow` の品質を prompt と few-shot だけで詰められるようにしてあります。
+
 ## Plan JSON
 
 現在の plan は複数吹き出し対応です。
@@ -48,13 +65,53 @@
 - すべての文はちょうど一度だけ使う
 - `columns` を連結した文字列は、その吹き出しに割り当てた文と完全一致する
 
+段ごとの JSON は次のように分かれます。
+
+`assignment`:
+
+```json
+{
+  "dialogue_lines": ["今日はもう帰ろうかな..."],
+  "bubbles": [
+    {
+      "bubble_id": "b1",
+      "sentence_ids": [1]
+    }
+  ]
+}
+```
+
+`reflow`:
+
+```json
+{
+  "dialogue_lines": ["今日はもう帰ろうかな..."],
+  "bubbles": [
+    {
+      "bubble_id": "b1",
+      "sentence_ids": [1],
+      "columns": ["今日はもう", "帰ろうかな..."]
+    }
+  ]
+}
+```
+
 ## モデルにやらせること
 
-`Heretic` にやらせているのは次だけです。
+`full` では `Heretic` に次をやらせています。
 
 - 吹き出しごとの `anchor_x`, `anchor_y`
 - 文のまとめ方
 - その文をどう `columns` に分けるか
+
+一方、現在の段階分割フローでは次のように責務を分けています。
+
+- `assignment`
+  ルールベース
+- `reflow`
+  text-only LLM
+- `placement`
+  まだ未分離。現時点では `scene` または `full` に含まれる
 
 モデルにやらせていないもの:
 
@@ -137,6 +194,56 @@ SVG 素材を target ratio に合わせる処理は [`warp_svg_source_to_aspect(
 
 これは本線の描画ロジックとは別で、素材や比率の切り分け用です。
 
+## Reflow Prompt
+
+`reflow` 用 prompt はコード内に直書きせず、[`prompts/`](/storage/projects/text-bubble/prompts) 配下へ外出ししています。
+
+- system prompt:
+  [`reflow_system.txt`](/storage/projects/text-bubble/prompts/reflow_system.txt)
+- user prompt template:
+  [`reflow_user.txt`](/storage/projects/text-bubble/prompts/reflow_user.txt)
+- few-shot:
+  [`reflow_examples.json`](/storage/projects/text-bubble/prompts/reflow_examples.json)
+- テストケース:
+  [`reflow_test_cases.json`](/storage/projects/text-bubble/prompts/reflow_test_cases.json)
+
+運用上のルール:
+
+- few-shot の例とテストケースは同じ文を使わない
+- `reflow` は `1 bubble = 1 request`
+- `thinking` を有効にしている
+- ただし出力は必ず JSON schema で縛る
+
+現在の prompt 方針:
+
+- 列長の均等化より、文のまとまりの自然さを優先する
+- できるだけ切らず、必要なときだけ最小限で切る
+- 引用、括弧、語尾、連続記号を自然単位として扱う
+- `columns` を連結すると元文と完全一致することを必須にする
+
+## Reflow 検証
+
+`reflow` は専用スクリプトで回せます。
+
+```bash
+python3 scripts/test_reflow_prompt.py --indent 2
+```
+
+このスクリプトは次を行います。
+
+1. テスト文から `assignment` を作る
+2. 各 bubble ごとに `reflow` を 1 回呼ぶ
+3. `bubble_id`, `columns`, 再構成文字列、経過時間を JSON で出す
+
+これで、画像や placement を触らずに `reflow` prompt だけを繰り返し調整できます。
+
+2026年3月4日時点の観察:
+
+- 短文は 1 列に保つ方向へ改善した
+- `じゃん`, `の...？`, `でしょ` のような文末は few-shot 次第で挙動がかなり変わる
+- 括弧や引用のまとまりは比較的安定している
+- `って` や読点の直後でどこまでまとめるかはまだ揺れる
+
 ## 実行例
 
 推論:
@@ -146,6 +253,25 @@ SVG 素材を target ratio に合わせる処理は [`warp_svg_source_to_aspect(
   --input /notebooks/imgs/00005716.png \
   --plan-json /notebooks/imgs/00005716_separate_plan.json \
   --dialogue "夜見のどこみてるのー？"
+```
+
+段ごとの実行例:
+
+```bash
+./.venv/bin/python bubble_infer.py \
+  --stage assignment \
+  --plan-json out/assignment.json \
+  --dialogue "今日はもう帰ろうかな..." \
+  --dialogue "「ちょっと待って」と言った"
+```
+
+```bash
+./.venv/bin/python bubble_infer.py \
+  --stage reflow \
+  --assignment-json out/assignment.json \
+  --plan-json out/reflow.json \
+  --dialogue "今日はもう帰ろうかな..." \
+  --dialogue "「ちょっと待って」と言った"
 ```
 
 描画:

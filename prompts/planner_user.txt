@@ -1,0 +1,22 @@
+Analyze this image and place vertical manga speech bubbles for the fixed dialogue lines below.
+
+Fixed dialogue lines:
+{numbered_lines}
+
+Requirements:
+- Return one JSON object with exactly one key: "bubbles".
+- "bubbles" must be an array of 1 to {num_lines} bubble objects.
+- Each bubble object must contain exactly: "anchor_x", "anchor_y", "sentence_ids", "columns".
+- "anchor_x" and "anchor_y" are normalized 0.0 to 1.0 image coordinates.
+- The anchor is the top-right corner of the text block, not the bubble outline.
+- "sentence_ids" must contain consecutive 1-based line indices from the list above.
+- Every dialogue line must appear exactly once across all bubbles.
+- Keep the original line order. Do not reorder lines.
+- "columns" must be ordered from right to left.
+- When all strings in "columns" are concatenated, they must exactly equal the assigned dialogue line(s) joined with no separator changes.
+- Split into natural manga-style vertical columns.
+- Prefer columns of roughly 3 to 7 Japanese characters.
+- Avoid over-fragmented output. Do not create many 1 or 2 character columns unless unavoidable.
+- Prefer one line per bubble unless two adjacent short lines clearly fit better together.
+- Do not add extra keys.
+- Do not use markdown code fences.

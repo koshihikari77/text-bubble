@@ -93,12 +93,24 @@ MODEL_ALIAS=heretic \
 
 出力される JSON は `anchor_x`, `anchor_y`, `columns` を持ちます。`columns` は右から左へ並ぶ縦書き列です。`"".join(columns)` が `--dialogue` と完全一致しない場合は失敗します。
 
+段階的に確認したい場合は `bubble_infer.py` の `--stage assignment|reflow|scene|full` を使います。`reflow` は text-only で列分割だけを検証できます。
+
 主なオプション:
 
 - `--server http://127.0.0.1:8080/v1`
 - `--model heretic`
 - `--dialogue "夜見のどこみてるのー？"`
 - `--font /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`
+
+## Reflow Prompt の検証
+
+`reflow` 用 prompt は [`prompts/`](/storage/projects/text-bubble/prompts) に分けてあり、few-shot とテストケースも別ファイルにしています。
+
+```bash
+python3 scripts/test_reflow_prompt.py --indent 2
+```
+
+このスクリプトは [`prompts/reflow_test_cases.json`](/storage/projects/text-bubble/prompts/reflow_test_cases.json) を読み、各文を `1 bubble = 1 request` で `reflow` して結果を JSON で出します。
 
 ## 画像ごとに `.txt` を書く
 
