@@ -87,6 +87,16 @@ MODEL_ALIAS=heretic \
 ./scripts/run_server.sh
 ```
 
+Paperspace の外部 URL に載せたいときは次を使います。
+
+```bash
+./scripts/run_server.sh --paperspace-public
+```
+
+このフラグを付けると `0.0.0.0:6006` で待ち受け、`PAPERSPACE_FQDN` があれば
+`https://tensorboard-${PAPERSPACE_FQDN}` と API 用の
+`https://tensorboard-${PAPERSPACE_FQDN}/v1` を表示します。
+
 ## `/notebooks` へ移すとき
 
 このプロジェクトは基本的に repo 相対パスで動くので、`/notebooks/text-bubble` のような別パスへ移しても動かせます。移設時の注意点は次です。

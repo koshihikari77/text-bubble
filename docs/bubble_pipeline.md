@@ -320,6 +320,16 @@ python3 scripts/test_reflow_prompt.py --indent 2
   --text-renderer browser
 ```
 
+Paperspace で外部公開したい場合は、`llama-server` を次で起動できます。
+
+```bash
+./scripts/run_server.sh --paperspace-public
+```
+
+このモードでは `0.0.0.0:6006` で待ち受け、`PAPERSPACE_FQDN` があれば
+`https://tensorboard-${PAPERSPACE_FQDN}` と API base の
+`https://tensorboard-${PAPERSPACE_FQDN}/v1` を表示します。
+
 ## Diagnose 用の例
 
 [`docs/dialogue_examples.txt`](/storage/projects/text-bubble/docs/dialogue_examples.txt) に 1 文から 5 文までの投入例を置いています。
