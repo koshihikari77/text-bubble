@@ -1,49 +1,38 @@
 # text-bubble
 
-`llama.cpp` で `Qwen3.5-27B-heretic` を動かし、画像から固定セリフ入りの縦書き吹き出し画像を生成する最小パイプラインです。描画は `SVG + Playwright/Chromium` で行います。
+`llama.cpp` 上の `Qwen3.5-27B-heretic` を使って、画像に縦書き吹き出しを合成する CLI ツールです。  
+推論は OpenAI 互換の `llama-server` API、描画は `Playwright/Chromium + Pillow` で行います。
 
-2026年3月3日時点では、最新の `llama.cpp` ソースに `qwen3_5` / `qwen3vl` 系の実装が入っているため、Heretic の GGUF + `mmproj` を使う前提はあります。ここでは次の流れを作っています。
+## セットアップ
 
-1. `llama.cpp` を CUDA でビルド
-2. Heretic の GGUF と `mmproj` を取得
-3. `llama-server` を multimodal で起動
-4. 画像を投げて、テキストブロックの右上座標と縦書きの列分割を JSON で生成
-5. Pillow で楕円のしっぽなし吹き出しを描画して画像を書き出し
-
-## 前提
+前提:
 
 - Ubuntu 22.04 系
-- NVIDIA GPU
-- CUDA Toolkit
+- NVIDIA GPU（推論をローカル実行する場合）
 - Python 3.10+
 - `uv`
 
-システム依存を入れます。
-
-```bash
-apt-get update
-apt-get install -y cmake ninja-build libcurl4-openssl-dev fonts-noto-cjk
-```
-
-## Python 環境
-
-```bash
-python3 -m pip install --user uv
-~/.local/bin/uv venv .venv
-~/.local/bin/uv pip install --python .venv/bin/python -r requirements.txt
-PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
-  ~/.local/bin/uv run --python .venv/bin/python playwright install chromium
-PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
-  ~/.local/bin/uv run --python .venv/bin/python playwright install-deps chromium
-```
-
-同じ環境を手早く作り直す場合は次でも構いません。
+ローカル環境の作成:
 
 ```bash
 ./scripts/setup_local_env.sh
 ```
 
-## llama.cpp のビルド
+再インストールしたい場合:
+
+```bash
+./scripts/setup_local_env.sh --reinstall
+```
+
+Playwright のシステム依存導入も含める場合:
+
+```bash
+./scripts/setup_local_env.sh --with-deps
+```
+
+## llama.cpp / モデル / サーバ
+
+`llama.cpp` のビルド:
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp.git
@@ -51,143 +40,87 @@ cmake -S llama.cpp -B llama.cpp/build -G Ninja -DGGML_CUDA=ON
 cmake --build llama.cpp/build --config Release -j 8
 ```
 
-## モデル取得
-
-デフォルトでは `mradermacher/Qwen3.5-27B-heretic-GGUF` の `Q4_K_M` と `mmproj-Q8_0` を取得します。
+モデル取得:
 
 ```bash
 ./scripts/download_model.sh
 ```
 
-保存先:
-
-- `models/heretic/Qwen3.5-27B-heretic.Q4_K_M.gguf`
-- `models/heretic/Qwen3.5-27B-heretic.mmproj-Q8_0.gguf`
-
-必要なら環境変数で上書きできます。
-
-```bash
-MODEL_FILE=Qwen3.5-27B-heretic.Q5_K_M.gguf \
-MMPROJ_FILE=Qwen3.5-27B-heretic.mmproj-f16.gguf \
-./scripts/download_model.sh
-```
-
-## サーバ起動
+サーバ起動:
 
 ```bash
 ./scripts/run_server.sh
 ```
 
-主な上書き変数:
-
-```bash
-PORT=8081 \
-CTX_SIZE=8192 \
-MODEL_ALIAS=heretic \
-./scripts/run_server.sh
-```
-
-Paperspace の外部 URL に載せたいときは次を使います。
+Paperspace 公開 URL で使う場合:
 
 ```bash
 ./scripts/run_server.sh --paperspace-public
 ```
 
-このフラグを付けると `0.0.0.0:6006` で待ち受け、`PAPERSPACE_FQDN` があれば
-`https://tensorboard-${PAPERSPACE_FQDN}` と API 用の
-`https://tensorboard-${PAPERSPACE_FQDN}/v1` を表示します。
+## 新CLI (`text-bubble`)
 
-## `/notebooks` へ移すとき
+共通:
 
-このプロジェクトは基本的に repo 相対パスで動くので、`/notebooks/text-bubble` のような別パスへ移しても動かせます。移設時の注意点は次です。
+- workspace は `-w/--workspace`（デフォルト `out/workspace`）
+- `--json` で機械可読 JSON を stdout に出力
+- `--quiet` で進捗ログ抑制
+- `--server` 省略時は `TEXT_BUBBLE_SERVER`、未設定なら `http://127.0.0.1:8080/v1`
 
-- `.venv` は移動に弱いので、移設先で作り直す
-- `imgs/`, `resources/`, `out/` を repo 配下の作業ディレクトリとして使う
-- bubble 素材は `assets/` のほか `resources/` や `imgs/` に置いても拾える
-
-移設後は次を実行します。
+段階実行:
 
 ```bash
-cd /notebooks/text-bubble
-./scripts/setup_local_env.sh
+text-bubble -w out/run1 assign --dialogue "夜見のどこみてるのー？"
+text-bubble -w out/run1 reflow
+text-bubble -w out/run1 scene  -i imgs/00005716.png
+text-bubble -w out/run1 render -o out/result.png
 ```
 
-## 画像から吹き出し生成
+一括実行（段階分割）:
 
 ```bash
-./.venv/bin/python bubble_pipeline.py \
-  --input samples/input.png \
-  --output out/bubbled.png \
-  --plan-json out/plan.json \
+text-bubble -w out/run1 run \
+  -i imgs/00005716.png \
+  -o out/result.png \
   --dialogue "夜見のどこみてるのー？"
 ```
 
-出力される JSON は `anchor_x`, `anchor_y`, `columns` を持ちます。`columns` は右から左へ並ぶ縦書き列です。`"".join(columns)` が `--dialogue` と完全一致しない場合は失敗します。
-
-段階的に確認したい場合は `bubble_infer.py` の `--stage assignment|reflow|scene|full` を使います。`reflow` は text-only で列分割だけを検証できます。
-
-主なオプション:
-
-- `--server http://127.0.0.1:8080/v1`
-- `--model heretic`
-- `--dialogue "夜見のどこみてるのー？"`
-- `--font assets/JKG-L_3.ttf`
-
-デフォルトでは `assets/JKG-L_3.ttf` を優先して使います。
-
-## Reflow Prompt の検証
-
-`reflow` 用 prompt は [`prompts/`](/storage/projects/text-bubble/prompts) に分けてあり、few-shot とテストケースも別ファイルにしています。
+一括実行（`full` 1-shot 推論）:
 
 ```bash
-python3 scripts/test_reflow_prompt.py --indent 2
-```
-
-このスクリプトは [`prompts/reflow_test_cases.json`](/storage/projects/text-bubble/prompts/reflow_test_cases.json) を読み、各文を `1 bubble = 1 request` で `reflow` して結果を JSON で出します。
-
-## `reflow` 済みから続ける
-
-`reflow` まで終わっている場合は、`scene` を別で取り、その 2 つを `bubble_render.py` に渡して最終 plan を合成できます。
-
-```bash
-./.venv/bin/python bubble_infer.py \
-  --stage scene \
-  --input ../imgs/00005716.png \
-  --plan-json out/scene.json \
+text-bubble -w out/run1 full \
+  -i imgs/00005716.png \
+  -o out/result.png \
   --dialogue "夜見のどこみてるのー？"
 ```
 
+評価（常に JSON 出力）:
+
 ```bash
-./.venv/bin/python bubble_render.py \
-  --input ../imgs/00005716.png \
-  --scene-json out/scene.json \
-  --reflow-json out/reflow.json \
-  --save-plan-json out/final_plan.json \
-  --output out/00005716_bubbled.png \
-  --font assets/JKG-L_3.ttf \
-  --bubble-asset assets/bubble_ellipse.svg \
-  --text-renderer browser
+text-bubble -w out/run1 evaluate \
+  --rendered out/result.png \
+  --server "$TEXT_BUBBLE_SERVER"
+```
+
+補足:
+
+- `evaluate` は `json_schema` 付き1回実行（fallback なし）。
+- サーバー実装によっては、複数バブルの評価で `HTTP 500: Failed to parse input at pos 0` が返る場合がある。
+- 速度面の主なボトルネックは `render`。複数バブル時は Playwright/Chromium 起動コストで時間が伸びる。
+
+## 旧CLI
+
+互換性のため、既存の `bubble_pipeline.py`, `bubble_infer.py`, `bubble_render.py` は残しています。  
+新規利用は `text-bubble` を推奨します。
+
+## Reflow Prompt 検証
+
+```bash
+uv run python scripts/test_reflow_prompt.py --indent 2
 ```
 
 ## 画像ごとに `.txt` を書く
 
-`system.txt` と `user.txt` をファイルから読み、その内容を見ずに画像ごとの説明結果を同名 `.txt` へ保存する用途です。
-
 ```bash
 python3 scripts/prompt_images.py
 ```
-
-主なオプション:
-
-- `--dir /path/to/imgs`
-- `--system /path/to/system.txt`
-- `--user /path/to/user.txt`
-- `--overwrite`
-- `--include 00005716`
-
-## 補足
-
-- Heretic は multimodal モデルなので `mmproj` が必要です。
-- この実装は「漫画風の縦書きしっぽなし吹き出しを自動で置く」ための最小版です。厳密な人物追跡や口元推定はしていません。
-- 文字列の列分割とテキストブロックの右上座標は Heretic が決め、吹き出し形状とレンダリングはブラウザ側で行います。
-- 吹き出し位置はモデルの推論結果に依存します。品質を上げるなら、顔検出やセグメンテーションを別段で足すのが次の一手です。
