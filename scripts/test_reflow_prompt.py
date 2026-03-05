@@ -11,7 +11,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from bubble_pipeline import infer_assignment_plans, infer_reflow_plans  # noqa: E402
+from bubble.infer import infer_assignment_plans, infer_reflow_plans  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,36 +1,34 @@
 # Environment Setup
 
-このプロジェクトで現在使っている実行環境の整理です。対象は `llama.cpp + Heretic + bubble_pipeline.py` です。
+このプロジェクトで現在使っている実行環境の整理です。対象は `llama.cpp + Heretic + text-bubble CLI` です。
 
 ## 目的
 
 - `llama.cpp` で `Qwen3.5-27B-heretic` を multimodal で動かす
-- `bubble_pipeline.py` から `llama-server` に画像を投げる
+- `text-bubble` から `llama-server` に画像を投げる
 - 吹き出し素材と縦書き文字を `SVG + Playwright/Chromium` で描画する
 
 ## ディレクトリ
 
 - プロジェクトルート: このフォルダ自身
-- Python 仮想環境: `.venv`
+- `uv tool` インストール済みコマンド: `text-bubble`
 - Playwright ブラウザ: `.playwright-browsers`
 - `llama.cpp`: `llama.cpp/`
 - モデル: `models/heretic/`
 
-## Python 環境
+## ツール環境
 
-`uv` で仮想環境を作成している。
+`uv tool install -e .` で CLI をインストールする。
 
 ```bash
-python3 -m pip install --user uv
-~/.local/bin/uv venv .venv
-~/.local/bin/uv pip install --python .venv/bin/python -r requirements.txt
+uv tool install -e .
 ```
 
-現状 `requirements.txt` に入っている主要依存:
+再インストールする場合:
 
-- `Pillow`
-- `playwright`
-- `numpy`
+```bash
+uv tool install -e . --reinstall
+```
 
 ## Playwright
 
@@ -38,10 +36,17 @@ python3 -m pip install --user uv
 
 ```bash
 PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
-  ~/.local/bin/uv run --python .venv/bin/python playwright install chromium
+  uv tool run --from text-bubble playwright install chromium
 ```
 
-`bubble_pipeline.py` は `PLAYWRIGHT_BROWSERS_PATH` を `.playwright-browsers` に向ける。さらに `headless_shell` ではなく通常の Chromium 実行ファイルを優先して使う。
+必要な環境ではシステム依存も追加する。
+
+```bash
+PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
+  uv tool run --from text-bubble playwright install-deps chromium
+```
+
+`text-bubble` は `PLAYWRIGHT_BROWSERS_PATH` を `.playwright-browsers` に向ける。さらに `headless_shell` ではなく通常の Chromium 実行ファイルを優先して使う。
 
 理由:
 
@@ -125,11 +130,11 @@ cmake --build llama.cpp/build --target llama-server -j 8
 - 出力画像: `out/00005716_bubbled.png`
 - plan JSON: `out/00005716_plan.json`
 
-## 補助スクリプト
+## 補助ツール
 
-現在の補助スクリプト:
+現在の補助コマンド/スクリプト:
 
-- 推論専用: [`bubble_infer.py`](/storage/projects/text-bubble/bubble_infer.py)
-- 描画専用: [`bubble_render.py`](/storage/projects/text-bubble/bubble_render.py)
+- 新CLI: `text-bubble`（`assign/reflow/scene/render/run/full`）
+- 互換用旧CLI: [`bubble_infer.py`](/storage/projects/text-bubble/bubble_infer.py), [`bubble_render.py`](/storage/projects/text-bubble/bubble_render.py)
 - SVG 比率変換実験: [`warp_bubble_svg.py`](/storage/projects/text-bubble/scripts/warp_bubble_svg.py)
 - 正方形 bubble 実験: [`render_square_bubble_experiment.py`](/storage/projects/text-bubble/scripts/render_square_bubble_experiment.py)
