@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from bubble.llm import (
@@ -72,17 +73,52 @@ def reflow_assignment_plans(
     server: str,
     model: str,
     temperature: float,
+    workers: int = 4,
 ) -> list[ReflowBubblePlan]:
+    if workers < 1:
+        raise RuntimeError("reflow workers must be >= 1")
+    if len(assignment_plans) <= 1 or workers == 1:
+        reflow_plans: list[ReflowBubblePlan] = []
+        for assignment_plan in assignment_plans:
+            reflow_plans.append(
+                infer_reflow_columns_for_bubble(
+                    server=server,
+                    model=model,
+                    dialogue_lines=dialogue_lines,
+                    assignment_plan=assignment_plan,
+                    temperature=temperature,
+                )
+            )
+        return validate_reflow_plans(dialogue_lines, reflow_plans)
+
+    max_workers = min(workers, len(assignment_plans))
+    by_bubble_id: dict[str, ReflowBubblePlan] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_assignment = {
+            executor.submit(
+                infer_reflow_columns_for_bubble,
+                server,
+                model,
+                dialogue_lines,
+                assignment_plan,
+                temperature,
+            ): assignment_plan
+            for assignment_plan in assignment_plans
+        }
+        for future in as_completed(future_to_assignment):
+            assignment_plan = future_to_assignment[future]
+            try:
+                plan = future.result()
+            except Exception as exc:  # noqa: BLE001
+                for pending in future_to_assignment:
+                    pending.cancel()
+                raise RuntimeError(f"reflow failed for {assignment_plan.bubble_id}: {exc}") from exc
+            by_bubble_id[assignment_plan.bubble_id] = plan
+
     reflow_plans: list[ReflowBubblePlan] = []
     for assignment_plan in assignment_plans:
         reflow_plans.append(
-            infer_reflow_columns_for_bubble(
-                server=server,
-                model=model,
-                dialogue_lines=dialogue_lines,
-                assignment_plan=assignment_plan,
-                temperature=temperature,
-            )
+            by_bubble_id[assignment_plan.bubble_id]
         )
     return validate_reflow_plans(dialogue_lines, reflow_plans)
 
@@ -149,6 +185,7 @@ def infer_reflow_plans(
     dialogue: str,
     temperature: float,
     assignment_plans: list[AssignmentBubblePlan] | None = None,
+    reflow_workers: int = 4,
 ) -> tuple[list[str], list[ReflowBubblePlan]]:
     dialogue_lines = split_dialogue_lines(dialogue)
     if not dialogue_lines:
@@ -163,5 +200,6 @@ def infer_reflow_plans(
         server=server,
         model=model,
         temperature=temperature,
+        workers=reflow_workers,
     )
     return dialogue_lines, validate_reflow_plans(dialogue_lines, plans)

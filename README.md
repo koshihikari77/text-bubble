@@ -1,7 +1,7 @@
 # text-bubble
 
 `llama.cpp` 上の `Qwen3.5-27B-heretic` を使って、画像に縦書き吹き出しを合成する CLI ツールです。  
-推論は OpenAI 互換の `llama-server` API、描画は `Playwright/Chromium + Pillow` で行います。
+推論は OpenAI 互換の `llama-server` API、描画は `resvg` / `Playwright/Chromium` + Pillow で行います。
 
 ## セットアップ
 
@@ -58,6 +58,13 @@ Paperspace 公開 URL で使う場合:
 ./scripts/run_server.sh --paperspace-public
 ```
 
+`resvg` を使う場合:
+
+```bash
+apt-get update
+apt-get install -y resvg
+```
+
 ## 新CLI (`text-bubble`)
 
 共通:
@@ -66,6 +73,10 @@ Paperspace 公開 URL で使う場合:
 - `--json` で機械可読 JSON を stdout に出力
 - `--quiet` で進捗ログ抑制
 - `--server` 省略時は `TEXT_BUBBLE_SERVER`、未設定なら `http://127.0.0.1:8080/v1`
+- `render/run/full` は `--text-renderer resvg-hybrid|browser`（デフォルト `resvg-hybrid`）
+- `render/run/full` は `--bubble-renderer resvg|browser`（デフォルト `resvg`）
+- `resvg-hybrid` の調整は `--text-letter-spacing`（既定 `-1px`）, `--text-word-spacing`（既定 `0`）, `--resvg-tu-override/--no-resvg-tu-override`
+- `reflow/run` は `--reflow-workers` で並列度を指定（デフォルト `4`）
 
 段階実行:
 
@@ -75,6 +86,9 @@ text-bubble -w out/run1 reflow
 text-bubble -w out/run1 scene  -i imgs/00005716.png
 text-bubble -w out/run1 render -o out/result.png
 ```
+
+`resvg` が未導入で `--text-renderer resvg-hybrid` または `--bubble-renderer resvg` の場合はエラーになる。  
+`resvg` なしで進める場合は `--text-renderer browser --bubble-renderer browser` を指定する。
 
 一括実行（段階分割）:
 
@@ -106,7 +120,7 @@ text-bubble -w out/run1 evaluate \
 
 - `evaluate` は `json_schema` 付き1回実行（fallback なし）。
 - サーバー実装によっては、複数バブルの評価で `HTTP 500: Failed to parse input at pos 0` が返る場合がある。
-- 速度面の主なボトルネックは `render`。複数バブル時は Playwright/Chromium 起動コストで時間が伸びる。
+- 速度面の最適化 TODO は `docs/ideas/render_perf_todo.md` を参照。
 
 ## 旧CLI
 

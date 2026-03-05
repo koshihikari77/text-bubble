@@ -4,6 +4,9 @@ import base64
 import copy
 import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import Path
@@ -127,6 +130,16 @@ def resolve_chromium_executable() -> str | None:
     if candidates:
         return str(candidates[-1])
     return None
+
+
+def resolve_resvg_executable() -> str | None:
+    explicit = os.environ.get("TEXT_BUBBLE_RESVG", "").strip()
+    if explicit:
+        path = Path(explicit)
+        if path.exists():
+            return str(path)
+    resolved = shutil.which("resvg")
+    return resolved if resolved else None
 
 
 def flood_fill_outside_open_regions(grayscale: np.ndarray, outline_cutoff: int) -> np.ndarray:
@@ -280,6 +293,7 @@ html, body {{
   --stroke: {BUBBLE_STROKE_COLOR};
 }}
 #asset .bubble {{
+  fill: #ffffff !important;
   fill-opacity: {BUBBLE_FILL_OPACITY} !important;
   stroke: {BUBBLE_STROKE_COLOR} !important;
 }}
@@ -290,6 +304,85 @@ html, body {{
 </body>
 </html>
 """
+
+
+def build_bubble_svg_source(svg_source: str, width: int, height: int) -> str:
+    root = ET.fromstring(svg_source)
+    root.set("width", str(width))
+    root.set("height", str(height))
+    root.set("preserveAspectRatio", "xMidYMid meet")
+
+    defs: ET.Element | None = None
+    for child in list(root):
+        if child.tag == svg_qname("defs"):
+            defs = child
+            break
+    if defs is None:
+        defs = ET.Element(svg_qname("defs"))
+        root.insert(0, defs)
+
+    style = ET.SubElement(defs, svg_qname("style"))
+    style.text = (
+        ":root {"
+        f"--stroke: {BUBBLE_STROKE_COLOR};"
+        "--fill: #ffffff;"
+        "}"
+        ".bubble {"
+        "fill: #ffffff !important;"
+        f"fill-opacity: {BUBBLE_FILL_OPACITY} !important;"
+        f"stroke: {BUBBLE_STROKE_COLOR} !important;"
+        "}"
+    )
+    return ET.tostring(root, encoding="unicode")
+
+
+def render_svg_with_resvg(
+    svg_source: str,
+    width: int,
+    height: int,
+    executable: str,
+) -> Image.Image:
+    return render_raw_svg_with_resvg(
+        svg_source=build_bubble_svg_source(svg_source, width, height),
+        width=width,
+        height=height,
+        executable=executable,
+    )
+
+
+def render_raw_svg_with_resvg(
+    svg_source: str,
+    width: int,
+    height: int,
+    executable: str,
+    *,
+    font_path: str | None = None,
+    font_family: str | None = None,
+) -> Image.Image:
+    with tempfile.TemporaryDirectory(prefix="text-bubble-resvg-") as temp_dir:
+        source_path = Path(temp_dir) / "input.svg"
+        output_path = Path(temp_dir) / "output.png"
+        source_path.write_text(svg_source, encoding="utf-8")
+        command = [executable, "--width", str(width), "--height", str(height)]
+        if font_family:
+            command.extend(["--font-family", font_family])
+        if font_path:
+            command.extend(["--use-font-file", font_path])
+        command.extend([str(source_path), str(output_path)])
+        process = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if process.returncode != 0:
+            stderr = process.stderr.strip()
+            stdout = process.stdout.strip()
+            details = stderr or stdout or f"exit code {process.returncode}"
+            raise RuntimeError(f"resvg failed: {details}")
+        if not output_path.exists():
+            raise RuntimeError("resvg did not produce output image")
+        return Image.open(output_path).convert("RGBA")
 
 
 def white_to_transparent(image: Image.Image, cutoff: int = 248) -> Image.Image:

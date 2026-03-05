@@ -6,7 +6,7 @@
 
 - `llama.cpp` で `Qwen3.5-27B-heretic` を multimodal で動かす
 - `text-bubble` から `llama-server` に画像を投げる
-- 吹き出し素材と縦書き文字を `SVG + Playwright/Chromium` で描画する
+- 吹き出し素材を `resvg` または `Playwright/Chromium`、文字を `resvg-hybrid` または `Playwright/Chromium` で描画する
 
 ## ディレクトリ
 
@@ -53,6 +53,25 @@ PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers \
 - `headless_shell` ではこの環境で HTML テキストが描画されなかった
 - 通常の Chromium ではテキスト描画が通った
 
+## resvg
+
+SVG 吹き出しのラスタ化は既定で `resvg` を使う。
+
+```bash
+apt-get update
+apt-get install -y resvg
+```
+
+CLI 上書き:
+
+- `--bubble-renderer resvg`（既定）
+- `--bubble-renderer browser`（互換経路）
+- `--text-renderer resvg-hybrid`（既定）
+- `--text-renderer browser`（互換経路）
+- `resvg-hybrid` 調整: `--text-letter-spacing`, `--text-word-spacing`, `--resvg-tu-override/--no-resvg-tu-override`
+
+カスタム実行ファイルを使う場合は `TEXT_BUBBLE_RESVG=/path/to/resvg` を指定する。
+
 ## システム依存
 
 ビルドとブラウザ描画で必要だった主要パッケージ:
@@ -63,6 +82,7 @@ apt-get install -y \
   cmake \
   ninja-build \
   libcurl4-openssl-dev \
+  resvg \
   fonts-noto-cjk \
   libcairo2 \
   libpango-1.0-0 \
@@ -75,6 +95,7 @@ apt-get install -y \
 
 - `libcairo2`, `libpango-*`, `libfontconfig1`, `libharfbuzz0b` は通常 Chromium の文字描画に必要だった
 - これが無いと Playwright の Chromium 実行時に shared library error が出た
+- `resvg` が無い状態で `--bubble-renderer resvg` または `--text-renderer resvg-hybrid` を使うと即エラーになる
 
 ## llama.cpp
 

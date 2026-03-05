@@ -176,6 +176,26 @@ def _dialogue_text(dialogue_lines: list[str]) -> str:
     return "\n".join(dialogue_lines)
 
 
+def _validate_text_renderer(text_renderer: str) -> str:
+    normalized = text_renderer.strip().lower()
+    if normalized not in {"browser", "resvg-hybrid"}:
+        raise RuntimeError(f"unsupported text renderer: {text_renderer}")
+    return normalized
+
+
+def _validate_bubble_renderer(bubble_renderer: str) -> str:
+    normalized = bubble_renderer.strip().lower()
+    if normalized not in {"resvg", "browser"}:
+        raise RuntimeError(f"unsupported bubble renderer: {bubble_renderer}")
+    return normalized
+
+
+def _validate_reflow_workers(reflow_workers: int) -> int:
+    if reflow_workers < 1:
+        raise RuntimeError("reflow workers must be >= 1")
+    return reflow_workers
+
+
 @app.command()
 def assign(
     ctx: typer.Context,
@@ -209,6 +229,7 @@ def reflow(
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
+    reflow_workers: int = typer.Option(4, "--reflow-workers", help="Parallel workers for reflow requests."),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
@@ -220,6 +241,7 @@ def reflow(
         assignment_dialogue_lines, assignment_plans = load_assignment_plan_json(files.assignment)
         if assignment_dialogue_lines != dialogue_lines:
             raise RuntimeError("dialogue does not match assignment JSON dialogue_lines")
+        validated_reflow_workers = _validate_reflow_workers(reflow_workers)
         resolved_server = _resolve_server(server)
         _log(state, f"running reflow via {resolved_server}")
         _, plans = infer_reflow_plans(
@@ -228,6 +250,7 @@ def reflow(
             dialogue=_dialogue_text(dialogue_lines),
             temperature=temperature,
             assignment_plans=assignment_plans,
+            reflow_workers=validated_reflow_workers,
         )
         save_reflow_plan_json(files.reflow, dialogue_lines, plans)
         metadata["dialogue_lines"] = dialogue_lines
@@ -238,6 +261,7 @@ def reflow(
             "output_file": str(files.reflow),
             "server": resolved_server,
             "model": model,
+            "reflow_workers": validated_reflow_workers,
             **reflow_plans_payload(dialogue_lines, plans),
         }
         _emit_success(state, payload, f"reflow saved: {files.reflow}")
@@ -295,13 +319,21 @@ def render(
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
     bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
-    text_renderer: str = typer.Option("browser", "--text-renderer", help="Text renderer backend."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
+    bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
+    text_letter_spacing: str = typer.Option("-1px", "--text-letter-spacing", help="Letter spacing for text renderer."),
+    text_word_spacing: str = typer.Option("0", "--text-word-spacing", help="Word spacing for text renderer."),
+    resvg_tu_override: bool = typer.Option(
+        True,
+        "--resvg-tu-override/--no-resvg-tu-override",
+        help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
+    ),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
     try:
-        if text_renderer != "browser":
-            raise RuntimeError(f"unsupported text renderer: {text_renderer}")
+        validated_text_renderer = _validate_text_renderer(text_renderer)
+        validated_bubble_renderer = _validate_bubble_renderer(bubble_renderer)
         if not files.scene.exists():
             raise RuntimeError(f"scene plan JSON not found: {files.scene}")
         if not files.reflow.exists():
@@ -328,7 +360,11 @@ def render(
             font_family=font_family,
             bubble_asset=resolved_bubble_asset,
             font_size=font_size,
-            text_renderer=text_renderer,
+            text_renderer=validated_text_renderer,
+            bubble_renderer=validated_bubble_renderer,
+            text_letter_spacing=text_letter_spacing,
+            text_word_spacing=text_word_spacing,
+            resvg_tu_override=resvg_tu_override,
         )
         metadata["dialogue_lines"] = dialogue_lines
         metadata["input_image"] = str(image_path)
@@ -339,6 +375,11 @@ def render(
             "input_image": str(image_path),
             "output_file": str(output_path),
             "plan_file": str(files.plan),
+            "text_renderer": validated_text_renderer,
+            "bubble_renderer": validated_bubble_renderer,
+            "text_letter_spacing": text_letter_spacing,
+            "text_word_spacing": text_word_spacing,
+            "resvg_tu_override": resvg_tu_override,
             **plans_payload(dialogue_lines, plans),
         }
         _emit_success(state, payload, f"rendered image: {output_path}")
@@ -434,13 +475,23 @@ def run(
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
     bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
-    text_renderer: str = typer.Option("browser", "--text-renderer", help="Text renderer backend."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
+    bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
+    text_letter_spacing: str = typer.Option("-1px", "--text-letter-spacing", help="Letter spacing for text renderer."),
+    text_word_spacing: str = typer.Option("0", "--text-word-spacing", help="Word spacing for text renderer."),
+    resvg_tu_override: bool = typer.Option(
+        True,
+        "--resvg-tu-override/--no-resvg-tu-override",
+        help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
+    ),
+    reflow_workers: int = typer.Option(4, "--reflow-workers", help="Parallel workers for reflow requests."),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
     try:
-        if text_renderer != "browser":
-            raise RuntimeError(f"unsupported text renderer: {text_renderer}")
+        validated_text_renderer = _validate_text_renderer(text_renderer)
+        validated_bubble_renderer = _validate_bubble_renderer(bubble_renderer)
+        validated_reflow_workers = _validate_reflow_workers(reflow_workers)
         metadata = _load_metadata(files.metadata)
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
@@ -457,6 +508,7 @@ def run(
             dialogue=_dialogue_text(dialogue_lines),
             temperature=temperature,
             assignment_plans=assignment_plans,
+            reflow_workers=validated_reflow_workers,
         )
         save_reflow_plan_json(files.reflow, dialogue_lines, reflow_plans)
 
@@ -486,7 +538,11 @@ def run(
             font_family=font_family,
             bubble_asset=resolved_bubble_asset,
             font_size=font_size,
-            text_renderer=text_renderer,
+            text_renderer=validated_text_renderer,
+            bubble_renderer=validated_bubble_renderer,
+            text_letter_spacing=text_letter_spacing,
+            text_word_spacing=text_word_spacing,
+            resvg_tu_override=resvg_tu_override,
         )
 
         metadata["dialogue_lines"] = dialogue_lines
@@ -499,6 +555,12 @@ def run(
             "plan_file": str(files.plan),
             "server": resolved_server,
             "model": model,
+            "text_renderer": validated_text_renderer,
+            "bubble_renderer": validated_bubble_renderer,
+            "text_letter_spacing": text_letter_spacing,
+            "text_word_spacing": text_word_spacing,
+            "resvg_tu_override": resvg_tu_override,
+            "reflow_workers": validated_reflow_workers,
             **plans_payload(dialogue_lines, plans),
         }
         _emit_success(state, payload, f"run completed: {output_path}")
@@ -519,13 +581,21 @@ def full(
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
     bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
-    text_renderer: str = typer.Option("browser", "--text-renderer", help="Text renderer backend."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
+    bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
+    text_letter_spacing: str = typer.Option("-1px", "--text-letter-spacing", help="Letter spacing for text renderer."),
+    text_word_spacing: str = typer.Option("0", "--text-word-spacing", help="Word spacing for text renderer."),
+    resvg_tu_override: bool = typer.Option(
+        True,
+        "--resvg-tu-override/--no-resvg-tu-override",
+        help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
+    ),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
     try:
-        if text_renderer != "browser":
-            raise RuntimeError(f"unsupported text renderer: {text_renderer}")
+        validated_text_renderer = _validate_text_renderer(text_renderer)
+        validated_bubble_renderer = _validate_bubble_renderer(bubble_renderer)
         metadata = _load_metadata(files.metadata)
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
@@ -553,7 +623,11 @@ def full(
             font_family=font_family,
             bubble_asset=resolved_bubble_asset,
             font_size=font_size,
-            text_renderer=text_renderer,
+            text_renderer=validated_text_renderer,
+            bubble_renderer=validated_bubble_renderer,
+            text_letter_spacing=text_letter_spacing,
+            text_word_spacing=text_word_spacing,
+            resvg_tu_override=resvg_tu_override,
         )
 
         metadata["dialogue_lines"] = dialogue_lines
@@ -566,6 +640,11 @@ def full(
             "plan_file": str(files.plan),
             "server": resolved_server,
             "model": model,
+            "text_renderer": validated_text_renderer,
+            "bubble_renderer": validated_bubble_renderer,
+            "text_letter_spacing": text_letter_spacing,
+            "text_word_spacing": text_word_spacing,
+            "resvg_tu_override": resvg_tu_override,
             **plans_payload(dialogue_lines, plans),
         }
         _emit_success(state, payload, f"full completed: {output_path}")

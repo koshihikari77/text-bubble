@@ -71,5 +71,7 @@ cat <<'EOF'
 Environment is ready.
 - text-bubble command is available
 - Playwright browsers: .playwright-browsers
+- Optional: install `resvg` for default text/bubble renderer
+  apt-get update && apt-get install -y resvg
 - Working directories: imgs resources out
 EOF
