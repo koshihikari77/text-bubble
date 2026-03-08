@@ -63,6 +63,7 @@ def _plan_for_evaluate(plans: list[BubblePlan]) -> list[dict[str, Any]]:
                 "anchor_y": plan.anchor_y,
                 "columns": plan.columns,
                 "text": "".join(plan.columns),
+                "speaker_id": plan.speaker_id,
             }
         )
     return rows

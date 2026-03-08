@@ -132,6 +132,11 @@ def build_plan_schema(num_lines: int) -> dict[str, Any]:
                                 "maxLength": 24,
                             },
                         },
+                        "speaker_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                        },
                     },
                     "required": ["anchor_x", "anchor_y", "sentence_ids", "columns"],
                 },
@@ -170,6 +175,11 @@ def build_scene_plan_schema(num_lines: int) -> dict[str, Any]:
                                 "minimum": 1,
                                 "maximum": num_lines,
                             },
+                        },
+                        "speaker_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
                         },
                     },
                     "required": ["bubble_id", "anchor_x", "anchor_y", "sentence_ids"],

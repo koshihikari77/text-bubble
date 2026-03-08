@@ -36,6 +36,7 @@ class BubblePlan:
     anchor_y: float
     sentence_ids: list[int]
     columns: list[str]
+    speaker_id: str = ""
 
 
 @dataclass
@@ -57,6 +58,7 @@ class SceneBubblePlan:
     anchor_x: float
     anchor_y: float
     sentence_ids: list[int]
+    speaker_id: str = ""
 
 
 @dataclass
@@ -71,6 +73,7 @@ def bubble_plan_to_dict(plan: BubblePlan) -> dict[str, Any]:
         "anchor_y": plan.anchor_y,
         "sentence_ids": plan.sentence_ids,
         "columns": plan.columns,
+        "speaker_id": plan.speaker_id,
     }
 
 
@@ -116,6 +119,7 @@ def scene_bubble_plan_to_dict(plan: SceneBubblePlan) -> dict[str, Any]:
         "anchor_x": plan.anchor_x,
         "anchor_y": plan.anchor_y,
         "sentence_ids": plan.sentence_ids,
+        "speaker_id": plan.speaker_id,
     }
 
 

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "test_cli_smoke",
+    "workspace": "../out/test_cli"
+  },
+  {
+    "name": "test_full_simple_smoke",
+    "workspace": "../out/test_full_simple"
+  }
+]

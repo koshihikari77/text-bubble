@@ -40,6 +40,12 @@ def text_for_sentence_ids(dialogue_lines: list[str], sentence_ids: list[int]) ->
     return "".join(dialogue_lines[sentence_id - 1] for sentence_id in sentence_ids)
 
 
+def _normalize_speaker_id(value: Any, *, index: int, fallback_prefix: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return f"__{fallback_prefix}_{index}"
+
+
 def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[BubblePlan]:
     message, raw_message = _message_to_text(response)
     try:
@@ -77,6 +83,7 @@ def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[Bu
                 anchor_y=float(bubble["anchor_y"]),
                 sentence_ids=normalized_ids,
                 columns=normalized_columns,
+                speaker_id=_normalize_speaker_id(bubble.get("speaker_id"), index=index, fallback_prefix="plan"),
             )
         )
 
@@ -124,6 +131,7 @@ def extract_scene_plan(response: dict[str, Any], dialogue_lines: list[str]) -> l
                 anchor_x=float(bubble["anchor_x"]),
                 anchor_y=float(bubble["anchor_y"]),
                 sentence_ids=normalized_ids,
+                speaker_id=_normalize_speaker_id(bubble.get("speaker_id"), index=index, fallback_prefix="scene"),
             )
         )
 
@@ -339,6 +347,7 @@ def compose_bubble_plans(
                 anchor_y=scene_plan.anchor_y,
                 sentence_ids=scene_plan.sentence_ids,
                 columns=reflow_plan.columns,
+                speaker_id=scene_plan.speaker_id,
             )
         )
     return sorted(composed, key=lambda plan: plan.sentence_ids[0])
