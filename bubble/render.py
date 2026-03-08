@@ -3,16 +3,19 @@ from __future__ import annotations
 import html
 import io
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from PIL import Image
 
 from bubble.assets import (
+    build_merged_bubble_svg_source,
     build_bubble_svg_html,
     build_font_css,
     bubble_png_to_rgba,
     load_bubble_svg_source,
+    render_raw_svg_with_resvg,
     render_svg_with_resvg,
     resolve_chromium_executable,
     resolve_resvg_executable,
@@ -21,6 +24,14 @@ from bubble.assets import (
 from bubble.layout import compute_bubble_layout, compute_text_layout
 from bubble.models import DEFAULT_FONT_DIVISOR, BubblePlan, TEXT_COLOR, TEXT_SHADOW, TextRenderResult
 from bubble.text_render_resvg_hybrid import render_text_overlay_resvg_hybrid
+
+
+@dataclass
+class RenderedBubble:
+    plan: BubblePlan
+    text_overlay: TextRenderResult
+    bubble_layout: dict[str, int]
+    bubble_image: Image.Image
 
 
 def alpha_composite_clipped(base: Image.Image, overlay: Image.Image, left: int, top: int) -> None:
@@ -299,6 +310,132 @@ def _resolve_bubble_image(
     raise RuntimeError(f"unsupported bubble renderer: {bubble_renderer}")
 
 
+def _expanded_box(box: tuple[int, int, int, int], padding: int) -> tuple[int, int, int, int]:
+    left, top, right, bottom = box
+    return left - padding, top - padding, right + padding, bottom + padding
+
+
+def _boxes_intersect(left_box: tuple[int, int, int, int], right_box: tuple[int, int, int, int]) -> bool:
+    left_a, top_a, right_a, bottom_a = left_box
+    left_b, top_b, right_b, bottom_b = right_box
+    return not (right_a <= left_b or right_b <= left_a or bottom_a <= top_b or bottom_b <= top_a)
+
+
+def _bubble_bounds(item: RenderedBubble) -> tuple[int, int, int, int]:
+    return (
+        item.bubble_layout["bubble_left"],
+        item.bubble_layout["bubble_top"],
+        item.bubble_layout["bubble_right"],
+        item.bubble_layout["bubble_bottom"],
+    )
+
+
+def _merge_gap_px(left: RenderedBubble, right: RenderedBubble) -> int:
+    outline = max(left.bubble_layout["outline_width"], right.bubble_layout["outline_width"])
+    left_width = left.bubble_layout["bubble_width"]
+    right_width = right.bubble_layout["bubble_width"]
+    return max(outline * 4, min(left_width, right_width) // 8)
+
+
+def _has_explicit_speaker_id(value: str) -> bool:
+    normalized = value.strip()
+    return bool(normalized) and not normalized.startswith("__")
+
+
+def _should_merge_bubbles(left: RenderedBubble, right: RenderedBubble) -> bool:
+    if not _has_explicit_speaker_id(left.plan.speaker_id) or not _has_explicit_speaker_id(right.plan.speaker_id):
+        return False
+    if left.plan.speaker_id != right.plan.speaker_id:
+        return False
+    left_ids = left.plan.sentence_ids
+    right_ids = right.plan.sentence_ids
+    if not left_ids or not right_ids:
+        return False
+    sentence_gap = min(abs(left_ids[0] - right_ids[-1]), abs(right_ids[0] - left_ids[-1]))
+    if sentence_gap > 1:
+        return False
+    overlap_padding = max(1, _merge_gap_px(left, right) // 6)
+    return _boxes_intersect(
+        _expanded_box(_bubble_bounds(left), overlap_padding),
+        _expanded_box(_bubble_bounds(right), overlap_padding),
+    )
+
+
+def _group_bubbles_for_merge(items: list[RenderedBubble]) -> list[list[RenderedBubble]]:
+    if len(items) <= 1:
+        return [[item] for item in items]
+    parent = list(range(len(items)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left_index: int, right_index: int) -> None:
+        root_left = find(left_index)
+        root_right = find(right_index)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for left_index in range(len(items)):
+        for right_index in range(left_index + 1, len(items)):
+            if _should_merge_bubbles(items[left_index], items[right_index]):
+                union(left_index, right_index)
+
+    grouped: dict[int, list[RenderedBubble]] = {}
+    for index, item in enumerate(items):
+        grouped.setdefault(find(index), []).append(item)
+    return [
+        sorted(group, key=lambda entry: entry.plan.sentence_ids[0] if entry.plan.sentence_ids else 0)
+        for _, group in sorted(grouped.items(), key=lambda row: min(item.plan.sentence_ids[0] for item in row[1]))
+    ]
+
+
+def _render_merged_group_image(
+    *,
+    group: list[RenderedBubble],
+    bubble_renderer: str,
+    bubble_asset: Path,
+    browser: Any | None,
+    resvg_executable: str | None,
+) -> tuple[Image.Image, int, int]:
+    placements = [
+        {
+            "left": item.bubble_layout["bubble_left"],
+            "top": item.bubble_layout["bubble_top"],
+            "width": item.bubble_layout["bubble_width"],
+            "height": item.bubble_layout["bubble_height"],
+        }
+        for item in group
+    ]
+    merged_svg, left, top, width, height = build_merged_bubble_svg_source(
+        bubble_asset=bubble_asset,
+        placements=placements,
+    )
+    if bubble_renderer == "resvg":
+        if not resvg_executable:
+            raise RuntimeError("resvg not found; install resvg or use --bubble-renderer browser")
+        image = render_raw_svg_with_resvg(
+            svg_source=merged_svg,
+            width=width,
+            height=height,
+            executable=resvg_executable,
+        )
+    elif bubble_renderer == "browser":
+        if browser is None:
+            raise RuntimeError("browser bubble renderer requires an active Chromium session")
+        image = _render_bubble_svg_browser(
+            browser=browser,
+            svg_source=merged_svg,
+            width=width,
+            height=height,
+        )
+    else:
+        raise RuntimeError(f"unsupported bubble renderer: {bubble_renderer}")
+    return image, left, top
+
+
 def render_bubbles(
     image_path: Path,
     output_path: Path,
@@ -330,6 +467,7 @@ def render_bubbles(
         raise RuntimeError("resvg not found; install resvg or use text_renderer=browser with bubble_renderer=browser")
 
     def _render_with_browser(browser: Any | None) -> None:
+        rendered_bubbles: list[RenderedBubble] = []
         for plan in plans:
             text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
             text_overlay = render_text_overlay(
@@ -363,8 +501,37 @@ def render_bubbles(
                 resvg_executable=resvg_executable,
                 cache=bubble_cache,
             )
-            alpha_composite_clipped(base, bubble_image, bubble_layout["bubble_left"], bubble_layout["bubble_top"])
-            base.alpha_composite(text_overlay.image)
+            rendered_bubbles.append(
+                RenderedBubble(
+                    plan=plan,
+                    text_overlay=text_overlay,
+                    bubble_layout=bubble_layout,
+                    bubble_image=bubble_image,
+                )
+            )
+
+        for group in _group_bubbles_for_merge(rendered_bubbles):
+            use_vector_group_render = bubble_asset.suffix.lower() in {".svg", ".txt"}
+            if len(group) == 1 and not use_vector_group_render:
+                item = group[0]
+                alpha_composite_clipped(
+                    base,
+                    item.bubble_image,
+                    item.bubble_layout["bubble_left"],
+                    item.bubble_layout["bubble_top"],
+                )
+                continue
+            merged_image, left, top = _render_merged_group_image(
+                group=group,
+                bubble_renderer=bubble_renderer,
+                bubble_asset=bubble_asset,
+                browser=browser,
+                resvg_executable=resvg_executable,
+            )
+            alpha_composite_clipped(base, merged_image, left, top)
+
+        for item in rendered_bubbles:
+            base.alpha_composite(item.text_overlay.image)
 
     needs_browser = text_renderer == "browser" or bubble_renderer == "browser"
     if needs_browser:

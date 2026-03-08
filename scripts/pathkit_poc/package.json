@@ -1,0 +1,8 @@
+{
+  "name": "text-bubble-pathkit-poc",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "pathkit-wasm": "^1.0.0"
+  }
+}

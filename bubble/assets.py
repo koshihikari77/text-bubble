@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import copy
+import math
 import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +14,9 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+import pathops
+from fontTools.pens.svgPathPen import SVGPathPen
+from fontTools.svgLib.path import parse_path
 from PIL import Image
 
 from bubble.models import (
@@ -25,6 +30,9 @@ from bubble.models import (
 
 
 ET.register_namespace("", SVG_NS)
+
+TRANSFORM_PATTERN = re.compile(r"([A-Za-z]+)\s*\(([^)]*)\)")
+MERGED_BUBBLE_STROKE_SCALE = 0.84
 
 
 def pick_font_path(explicit: str | None) -> str | None:
@@ -334,6 +342,222 @@ def build_bubble_svg_source(svg_source: str, width: int, height: int) -> str:
         "}"
     )
     return ET.tostring(root, encoding="unicode")
+
+
+def _identity_matrix() -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+
+
+def _matmul(
+    left: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    right: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    result: list[list[float]] = [[0.0, 0.0, 0.0] for _ in range(3)]
+    for row in range(3):
+        for col in range(3):
+            result[row][col] = sum(left[row][index] * right[index][col] for index in range(3))
+    return (
+        (result[0][0], result[0][1], result[0][2]),
+        (result[1][0], result[1][1], result[1][2]),
+        (result[2][0], result[2][1], result[2][2]),
+    )
+
+
+def _translate_matrix(tx: float, ty: float) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return (
+        (1.0, 0.0, tx),
+        (0.0, 1.0, ty),
+        (0.0, 0.0, 1.0),
+    )
+
+
+def _scale_matrix(sx: float, sy: float) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return (
+        (sx, 0.0, 0.0),
+        (0.0, sy, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+
+
+def _parse_transform_matrix(value: str | None) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    matrix = _identity_matrix()
+    if not value:
+        return matrix
+    for name, args_text in TRANSFORM_PATTERN.findall(value):
+        raw_args = [part for part in re.split(r"[\s,]+", args_text.strip()) if part]
+        args = [float(part) for part in raw_args]
+        lowered = name.lower()
+        if lowered == "translate":
+            tx = args[0] if args else 0.0
+            ty = args[1] if len(args) > 1 else 0.0
+            current = _translate_matrix(tx, ty)
+        elif lowered == "scale":
+            sx = args[0] if args else 1.0
+            sy = args[1] if len(args) > 1 else sx
+            current = _scale_matrix(sx, sy)
+        elif lowered == "matrix" and len(args) == 6:
+            current = (
+                (args[0], args[2], args[4]),
+                (args[1], args[3], args[5]),
+                (0.0, 0.0, 1.0),
+            )
+        else:
+            continue
+        matrix = _matmul(matrix, current)
+    return matrix
+
+
+def _extract_bubble_path_specs(
+    svg_source: str,
+) -> tuple[tuple[float, float, float, float], list[tuple[str, tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]]], float]:
+    root = ET.fromstring(svg_source)
+    viewbox = parse_svg_viewbox(root)
+    path_specs: list[
+        tuple[str, tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]]
+    ] = []
+    stroke_width = 6.0
+
+    for style_node in root.findall(f".//{svg_qname('style')}"):
+        text = style_node.text or ""
+        match = re.search(r"--strokeW\s*:\s*([0-9.]+)", text)
+        if match:
+            stroke_width = float(match.group(1))
+            break
+        match = re.search(r"stroke-width\s*:\s*([0-9.]+)", text)
+        if match:
+            stroke_width = float(match.group(1))
+            break
+
+    def walk(
+        node: ET.Element,
+        inherited_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+        *,
+        in_defs: bool,
+    ) -> None:
+        current_matrix = _matmul(inherited_matrix, _parse_transform_matrix(node.attrib.get("transform")))
+        is_defs = in_defs or node.tag == svg_qname("defs")
+        if node.tag == svg_qname("path") and not is_defs:
+            d_value = node.attrib.get("d", "").strip()
+            if d_value:
+                path_specs.append((d_value, current_matrix))
+        for child in list(node):
+            walk(child, current_matrix, in_defs=is_defs)
+
+    walk(root, _identity_matrix(), in_defs=False)
+    if not path_specs:
+        raise RuntimeError("bubble SVG must contain at least one <path>")
+    return viewbox, path_specs, stroke_width
+
+
+def _pathops_matrix(
+    *,
+    source_matrix: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    vb_x: float,
+    vb_y: float,
+    scale_x: float,
+    scale_y: float,
+    bubble_left: int,
+    bubble_top: int,
+) -> list[float]:
+    return [
+        source_matrix[0][0] * scale_x,
+        source_matrix[0][1] * scale_x,
+        bubble_left + (source_matrix[0][2] - vb_x) * scale_x,
+        source_matrix[1][0] * scale_y,
+        source_matrix[1][1] * scale_y,
+        bubble_top + (source_matrix[1][2] - vb_y) * scale_y,
+        0.0,
+        0.0,
+        1.0,
+    ]
+
+
+def build_merged_bubble_svg_source(
+    *,
+    bubble_asset: Path,
+    placements: list[dict[str, int]],
+) -> tuple[str, int, int, int, int]:
+    if not placements:
+        raise RuntimeError("placements must be non-empty")
+    if bubble_asset.suffix.lower() not in {".svg", ".txt"}:
+        raise RuntimeError("merged bubble SVG requires an SVG bubble asset")
+
+    asset_svg = load_bubble_svg_source(bubble_asset)
+    request_paths: list[dict[str, object]] = []
+    stroke_widths: list[float] = []
+    for placement in placements:
+        bubble_width = int(placement["width"])
+        bubble_height = int(placement["height"])
+        bubble_left = int(placement["left"])
+        bubble_top = int(placement["top"])
+        warped_svg = warp_svg_source_to_aspect(asset_svg, bubble_width / max(1, bubble_height))
+        viewbox, path_specs, stroke_width = _extract_bubble_path_specs(warped_svg)
+        vb_x, vb_y, vb_w, vb_h = viewbox
+        scale_x = bubble_width / max(vb_w, 1e-6)
+        scale_y = bubble_height / max(vb_h, 1e-6)
+        stroke_widths.append(stroke_width * ((abs(scale_x) + abs(scale_y)) / 2.0))
+
+        for d_value, source_matrix in path_specs:
+            request_paths.append({
+                "d": d_value,
+                "matrix": _pathops_matrix(
+                    source_matrix=source_matrix,
+                    vb_x=vb_x,
+                    vb_y=vb_y,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
+                    bubble_left=bubble_left,
+                    bubble_top=bubble_top,
+                ),
+            })
+
+    if not request_paths:
+        raise RuntimeError("failed to build merged bubble path request")
+
+    merged_path: pathops.Path | None = None
+    for spec in request_paths:
+        current = pathops.Path()
+        parse_path(spec["d"], current.getPen())
+        matrix = spec["matrix"]
+        transformed = current.transform(matrix[0], matrix[3], matrix[1], matrix[4], matrix[2], matrix[5])
+        if merged_path is None:
+            merged_path = transformed
+        else:
+            merged_path = pathops.op(merged_path, transformed, pathops.PathOp.UNION)
+    if merged_path is None:
+        raise RuntimeError("failed to build merged bubble path")
+
+    path_pen = SVGPathPen(None)
+    merged_path.draw(path_pen)
+    left_bound, top_bound, right_bound, bottom_bound = merged_path.bounds
+    stroke_width_px = max(0.75, (sum(stroke_widths) / max(1, len(stroke_widths))) * MERGED_BUBBLE_STROKE_SCALE)
+    min_x = float(left_bound)
+    min_y = float(top_bound)
+    max_x = float(right_bound)
+    max_y = float(bottom_bound)
+    padding = max(2.0, stroke_width_px * 1.5)
+    left = int(math.floor(min_x - padding))
+    top = int(math.floor(min_y - padding))
+    right = int(math.ceil(max_x + padding))
+    bottom = int(math.ceil(max_y + padding))
+    width = max(1, right - left)
+    height = max(1, bottom - top)
+    svg_source = f"""<svg xmlns="{SVG_NS}" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+  <path d="{path_pen.getCommands()}"
+        transform="translate({-left} {-top})"
+        fill="#ffffff"
+        fill-opacity="{BUBBLE_FILL_OPACITY}"
+        stroke="{BUBBLE_STROKE_COLOR}"
+        stroke-width="{stroke_width_px:.3f}"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill-rule="nonzero" />
+</svg>"""
+    return svg_source, left, top, width, height
 
 
 def render_svg_with_resvg(
