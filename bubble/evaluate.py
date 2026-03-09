@@ -14,12 +14,22 @@ from bubble.models import BubblePlan
 ISSUE_TYPES = {"position", "reflow", "overlap", "readability", "size"}
 ISSUE_SEVERITIES = {"high", "medium", "low"}
 FIX_STAGES = {"scene", "reflow", "assignment", "render"}
+EVALUATE_STAGES = {"final", "text"}
+SEVERITY_ALIASES = {"critical": "high", "major": "high", "minor": "low", "moderate": "medium"}
+TEXT_STAGE_GUIDE_PAD_X = 12
+TEXT_STAGE_GUIDE_PAD_Y = 14
 
 
-def build_evaluate_schema(max_bubbles: int) -> dict[str, Any]:
+def _issue_types_for_stage(stage: str) -> list[str]:
+    if stage == "text":
+        return ["position", "reflow", "overlap", "readability"]
+    return sorted(ISSUE_TYPES)
+
+
+def build_evaluate_schema(max_bubbles: int, *, stage: str) -> dict[str, Any]:
+    del max_bubbles
     return {
         "type": "object",
-        "additionalProperties": False,
         "properties": {
             "verdict": {
                 "type": "string",
@@ -32,17 +42,15 @@ def build_evaluate_schema(max_bubbles: int) -> dict[str, Any]:
             },
             "issues": {
                 "type": "array",
-                "maxItems": max(1, max_bubbles * 4),
                 "items": {
                     "type": "object",
-                    "additionalProperties": False,
                     "properties": {
-                        "bubble_id": {"type": "string", "minLength": 2, "maxLength": 32},
-                        "type": {"type": "string", "enum": sorted(ISSUE_TYPES)},
+                        "bubble_id": {"type": "string"},
+                        "type": {"type": "string", "enum": _issue_types_for_stage(stage)},
                         "severity": {"type": "string", "enum": sorted(ISSUE_SEVERITIES)},
-                        "description": {"type": "string", "minLength": 1, "maxLength": 300},
+                        "description": {"type": "string"},
                         "fix_stage": {"type": "string", "enum": sorted(FIX_STAGES)},
-                        "suggestion": {"type": "string", "minLength": 1, "maxLength": 300},
+                        "suggestion": {"type": "string"},
                     },
                     "required": ["bubble_id", "type", "severity", "description", "fix_stage", "suggestion"],
                 },
@@ -72,17 +80,44 @@ def _plan_for_evaluate(plans: list[BubblePlan]) -> list[dict[str, Any]]:
 def build_evaluate_user_prompt(
     dialogue_lines: list[str],
     plans: list[BubblePlan],
+    *,
+    stage: str,
 ) -> str:
+    if stage not in EVALUATE_STAGES:
+        raise RuntimeError(f"unsupported evaluate stage: {stage}")
     rows = _plan_for_evaluate(plans)
-    numbered_lines = "\n".join(f"{index}. {line}" for index, line in enumerate(dialogue_lines, start=1))
-    plan_json = json.dumps(rows, ensure_ascii=False, indent=2)
+    numbered_lines = "\n".join(
+        f"{index}. {line}"
+        for index, line in enumerate(dialogue_lines, start=1)
+    )
+    bubble_lines = "\n".join(
+        (
+            f"- {row['bubble_id']}:"
+            f" sentence_ids={row['sentence_ids']},"
+            f" anchor=({row['anchor_x']:.3f}, {row['anchor_y']:.3f}),"
+            f" speaker_id={json.dumps(row['speaker_id'] or '-', ensure_ascii=False)},"
+            f" columns={json.dumps(row['columns'], ensure_ascii=False)}"
+        )
+        for row in rows
+    )
+    if stage == "text":
+        return (
+            "これは text stage の確認です。画像内の文字ガイド同士の位置関係と読みやすさだけを見てください。\n"
+            "白い角丸の箱は最終的な吹き出しではなく、文字ブロックの目安です。\n"
+            "吹き出しの形や大きさはまだ確定していないので評価しないでください。\n"
+            "anchor 座標は厳密一致をチェックするためのものではなく、おおよその配置を知るための補助情報です。\n\n"
+            "dialogue_lines:\n"
+            f"{numbered_lines}\n\n"
+            "bubble plans:\n"
+            f"{bubble_lines}"
+        )
     return (
-        "以下を評価してください。\n\n"
-        "## dialogue_lines\n"
+        "これは final render の確認です。元画像と完成画像を見比べて、実際に見えている問題だけを指摘してください。\n"
+        "anchor 座標は厳密一致をチェックするためのものではなく、おおよその配置を知るための補助情報です。\n\n"
+        "dialogue_lines:\n"
         f"{numbered_lines}\n\n"
-        "## bubbles (plan)\n"
-        f"{plan_json}\n\n"
-        "元画像とレンダリング後画像を比較し、必要なら issues を返してください。"
+        "bubble plans:\n"
+        f"{bubble_lines}"
     )
 
 
@@ -149,6 +184,85 @@ def _normalize_bubble_id(value: Any, max_bubbles: int, issue_index: int) -> str:
     raise RuntimeError(f"issue {issue_index} bubble_id must be like B1, B2: {value}")
 
 
+def _bbox_intersection_area(
+    left_a: int,
+    top_a: int,
+    right_a: int,
+    bottom_a: int,
+    left_b: int,
+    top_b: int,
+    right_b: int,
+    bottom_b: int,
+) -> int:
+    inter_left = max(left_a, left_b)
+    inter_top = max(top_a, top_b)
+    inter_right = min(right_a, right_b)
+    inter_bottom = min(bottom_a, bottom_b)
+    if inter_right <= inter_left or inter_bottom <= inter_top:
+        return 0
+    return (inter_right - inter_left) * (inter_bottom - inter_top)
+
+
+def _expand_text_bbox(bbox: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    left, top, right, bottom = bbox
+    return (
+        left - TEXT_STAGE_GUIDE_PAD_X,
+        top - TEXT_STAGE_GUIDE_PAD_Y,
+        right + TEXT_STAGE_GUIDE_PAD_X,
+        bottom + TEXT_STAGE_GUIDE_PAD_Y,
+    )
+
+
+def deterministic_text_overlap_issues(
+    plans: list[BubblePlan],
+    text_bboxes: list[tuple[int, int, int, int]],
+) -> list[dict[str, Any]]:
+    if len(plans) != len(text_bboxes):
+        raise RuntimeError("text_bboxes length must match plans length")
+    issues: list[dict[str, Any]] = []
+    for left_index in range(len(text_bboxes)):
+        left_bbox = _expand_text_bbox(text_bboxes[left_index])
+        for right_index in range(left_index + 1, len(text_bboxes)):
+            right_bbox = _expand_text_bbox(text_bboxes[right_index])
+            overlap_area = _bbox_intersection_area(*left_bbox, *right_bbox)
+            if overlap_area <= 0:
+                continue
+            left_plan = plans[left_index]
+            right_plan = plans[right_index]
+            left_bubble_id = f"B{left_index + 1}"
+            right_bubble_id = f"B{right_index + 1}"
+            suggestion = "separate the overlapping text blocks"
+            issues.append(
+                {
+                    "bubble_id": left_bubble_id,
+                    "type": "overlap",
+                    "severity": "high",
+                    "description": (
+                        f"text bbox overlaps with {right_bubble_id}; "
+                        f"sentence_ids={left_plan.sentence_ids} and {right_plan.sentence_ids}; "
+                        f"overlap_area={overlap_area}px"
+                    ),
+                    "fix_stage": "scene",
+                    "suggestion": suggestion,
+                }
+            )
+            issues.append(
+                {
+                    "bubble_id": right_bubble_id,
+                    "type": "overlap",
+                    "severity": "high",
+                    "description": (
+                        f"text bbox overlaps with {left_bubble_id}; "
+                        f"sentence_ids={right_plan.sentence_ids} and {left_plan.sentence_ids}; "
+                        f"overlap_area={overlap_area}px"
+                    ),
+                    "fix_stage": "scene",
+                    "suggestion": suggestion,
+                }
+            )
+    return issues
+
+
 def parse_evaluate_result(response: dict[str, Any], max_bubbles: int) -> dict[str, Any]:
     raw_text = _message_to_text(response)
     try:
@@ -193,6 +307,8 @@ def parse_evaluate_result(response: dict[str, Any], max_bubbles: int) -> dict[st
         bubble_id = _normalize_bubble_id(bubble_id_raw, max_bubbles, idx)
         issue_type = issue_type_raw.strip().lower() if isinstance(issue_type_raw, str) else issue_type_raw
         severity = severity_raw.strip().lower() if isinstance(severity_raw, str) else severity_raw
+        if isinstance(severity, str):
+            severity = SEVERITY_ALIASES.get(severity, severity)
         fix_stage = fix_stage_raw.strip().lower() if isinstance(fix_stage_raw, str) else fix_stage_raw
         if issue_type not in ISSUE_TYPES:
             raise RuntimeError(f"issue {idx} has invalid type: {issue_type}")
@@ -215,10 +331,10 @@ def parse_evaluate_result(response: dict[str, Any], max_bubbles: int) -> dict[st
             }
         )
 
-    if verdict == "pass" and normalized_issues:
-        raise RuntimeError("evaluate verdict=pass must not include issues")
-    if verdict == "needs_fix" and not normalized_issues:
-        raise RuntimeError("evaluate verdict=needs_fix must include at least one issue")
+    if normalized_issues:
+        verdict = "needs_fix"
+    else:
+        verdict = "pass"
 
     return {
         "verdict": verdict,
@@ -235,20 +351,24 @@ def _post_evaluate_chat_completion(
     rendered_image_data_url: str,
     temperature: float,
     schema: dict[str, Any],
+    stage: str,
 ) -> dict[str, Any]:
     body = {
         "model": model,
         "temperature": temperature,
         "top_k": 1,
-        "n_predict": 420,
+        "n_predict": 220,
         "seed": 42,
         "reasoning_format": "none",
         "chat_template_kwargs": {
-            "enable_thinking": True,
+            "enable_thinking": False,
         },
         "json_schema": schema,
         "messages": [
-            {"role": "system", "content": load_prompt_text("evaluate_prompt.md")},
+            {
+                "role": "system",
+                "content": load_prompt_text("evaluate_text_prompt.md" if stage == "text" else "evaluate_final_prompt.md"),
+            },
             {
                 "role": "user",
                 "content": [
@@ -285,16 +405,51 @@ def evaluate_rendered_result(
     original_image_path: Path,
     rendered_image_path: Path,
 ) -> dict[str, Any]:
+    return evaluate_preview_result(
+        server=server,
+        model=model,
+        temperature=temperature,
+        dialogue_lines=dialogue_lines,
+        plans=plans,
+        original_image_path=original_image_path,
+        preview_image_path=rendered_image_path,
+        stage="final",
+    )
+
+
+def evaluate_preview_result(
+    *,
+    server: str,
+    model: str,
+    temperature: float,
+    dialogue_lines: list[str],
+    plans: list[BubblePlan],
+    original_image_path: Path,
+    preview_image_path: Path,
+    stage: str,
+    text_bboxes: list[tuple[int, int, int, int]] | None = None,
+) -> dict[str, Any]:
     if not plans:
         raise RuntimeError("plan must contain at least one bubble for evaluation")
-    prompt = build_evaluate_user_prompt(dialogue_lines, plans)
+    if stage not in EVALUATE_STAGES:
+        raise RuntimeError(f"unsupported evaluate stage: {stage}")
+    if stage == "text":
+        overlap_issues = deterministic_text_overlap_issues(plans, text_bboxes or [])
+        if overlap_issues:
+            return {
+                "verdict": "needs_fix",
+                "score": 0.0,
+                "issues": overlap_issues,
+            }
+    prompt = build_evaluate_user_prompt(dialogue_lines, plans, stage=stage)
     response = _post_evaluate_chat_completion(
         server=server,
         model=model,
         prompt=prompt,
         original_image_data_url=encode_image_as_data_url(original_image_path),
-        rendered_image_data_url=encode_image_as_data_url(rendered_image_path),
+        rendered_image_data_url=encode_image_as_data_url(preview_image_path),
         temperature=temperature,
-        schema=build_evaluate_schema(len(plans)),
+        schema=build_evaluate_schema(len(plans), stage=stage),
+        stage=stage,
     )
     return parse_evaluate_result(response, max_bubbles=len(plans))

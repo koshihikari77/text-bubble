@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from bubble.assets import (
     build_merged_bubble_svg_source,
@@ -24,6 +24,14 @@ from bubble.assets import (
 from bubble.layout import compute_bubble_layout, compute_text_layout
 from bubble.models import DEFAULT_FONT_DIVISOR, BubblePlan, TEXT_COLOR, TEXT_SHADOW, TextRenderResult
 from bubble.text_render_resvg_hybrid import render_text_overlay_resvg_hybrid
+
+
+TEXT_STAGE_GUIDE_FILL = (255, 255, 255, 232)
+TEXT_STAGE_GUIDE_OUTLINE = (17, 17, 17, 180)
+TEXT_STAGE_GUIDE_PAD_X = 12
+TEXT_STAGE_GUIDE_PAD_Y = 14
+TEXT_STAGE_GUIDE_RADIUS = 12
+TEXT_STAGE_GUIDE_OUTLINE_WIDTH = 2
 
 
 @dataclass
@@ -556,3 +564,89 @@ def render_bubbles(
         base.convert("RGB").save(output_path, quality=95)
     else:
         base.save(output_path)
+
+
+def render_text_stage_preview(
+    image_path: Path,
+    output_path: Path,
+    plans: list[BubblePlan],
+    font_path: str | None,
+    font_family: str | None,
+    font_size: int,
+    text_renderer: str,
+    text_letter_spacing: str,
+    text_word_spacing: str,
+    resvg_tu_override: bool,
+) -> list[tuple[int, int, int, int]]:
+    if not plans:
+        raise RuntimeError("no bubble plans to render")
+    if text_renderer not in {"browser", "resvg-hybrid"}:
+        raise RuntimeError(f"unsupported text renderer: {text_renderer}")
+
+    base = Image.open(image_path).convert("RGBA")
+    width_px, height_px = base.size
+    actual_font_size = font_size or max(22, min(48, height_px // DEFAULT_FONT_DIVISOR))
+    resvg_executable = resolve_resvg_executable() if text_renderer == "resvg-hybrid" else None
+    if text_renderer == "resvg-hybrid" and not resvg_executable:
+        raise RuntimeError("resvg not found; install resvg or use text_renderer=browser")
+
+    text_bboxes: list[tuple[int, int, int, int]] = []
+
+    def _render_with_browser(browser: Any | None) -> None:
+        draw = ImageDraw.Draw(base, "RGBA")
+        for plan in plans:
+            text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
+            text_overlay = render_text_overlay(
+                renderer=text_renderer,
+                browser=browser,
+                canvas_width=width_px,
+                canvas_height=height_px,
+                plan=plan,
+                text_layout=text_layout,
+                font_path=font_path,
+                font_family=font_family,
+                resvg_executable=resvg_executable,
+                text_letter_spacing=text_letter_spacing,
+                text_word_spacing=text_word_spacing,
+                resvg_tu_override=resvg_tu_override,
+            )
+            left, top, right, bottom = text_overlay.alpha_bbox
+            text_bboxes.append(text_overlay.alpha_bbox)
+            guide_box = (
+                max(0, left - TEXT_STAGE_GUIDE_PAD_X),
+                max(0, top - TEXT_STAGE_GUIDE_PAD_Y),
+                min(width_px - 1, right + TEXT_STAGE_GUIDE_PAD_X),
+                min(height_px - 1, bottom + TEXT_STAGE_GUIDE_PAD_Y),
+            )
+            draw.rounded_rectangle(
+                guide_box,
+                radius=TEXT_STAGE_GUIDE_RADIUS,
+                fill=TEXT_STAGE_GUIDE_FILL,
+                outline=TEXT_STAGE_GUIDE_OUTLINE,
+                width=TEXT_STAGE_GUIDE_OUTLINE_WIDTH,
+            )
+            base.alpha_composite(text_overlay.image)
+
+    if text_renderer == "browser":
+        from playwright.sync_api import sync_playwright
+
+        _ensure_browser_env()
+        chromium_executable = resolve_chromium_executable()
+        with sync_playwright() as playwright:
+            launch_kwargs: dict[str, Any] = {"headless": True}
+            if chromium_executable:
+                launch_kwargs["executable_path"] = chromium_executable
+            browser = playwright.chromium.launch(**launch_kwargs)
+            try:
+                _render_with_browser(browser)
+            finally:
+                browser.close()
+    else:
+        _render_with_browser(None)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.suffix.lower() in {".jpg", ".jpeg"}:
+        base.convert("RGB").save(output_path, quality=95)
+    else:
+        base.save(output_path)
+    return text_bboxes

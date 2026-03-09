@@ -10,7 +10,7 @@ import typer
 
 from bubble import __version__
 from bubble.assets import pick_font_path, resolve_bubble_asset
-from bubble.evaluate import evaluate_rendered_result
+from bubble.evaluate import evaluate_preview_result, evaluate_rendered_result
 from bubble.infer import (
     infer_assignment_plans,
     infer_bubble_plans,
@@ -28,7 +28,7 @@ from bubble.models import (
     save_scene_plan_json,
     scene_plans_payload,
 )
-from bubble.render import render_bubbles
+from bubble.render import render_bubbles, render_text_stage_preview
 from bubble.validation import (
     compose_bubble_plans,
     load_assignment_plan_json,
@@ -139,6 +139,11 @@ def _save_metadata(path: Path, metadata: dict[str, Any]) -> None:
     path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _save_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _resolve_server(explicit: str | None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
@@ -194,6 +199,13 @@ def _validate_reflow_workers(reflow_workers: int) -> int:
     if reflow_workers < 1:
         raise RuntimeError("reflow workers must be >= 1")
     return reflow_workers
+
+
+def _validate_evaluate_stage(stage: str) -> str:
+    normalized = stage.strip().lower()
+    if normalized not in {"final", "text"}:
+        raise RuntimeError(f"unsupported evaluate stage: {stage}")
+    return normalized
 
 
 @app.command()
@@ -390,25 +402,36 @@ def render(
 @app.command()
 def evaluate(
     ctx: typer.Context,
-    rendered_path: Path = typer.Option(..., "--rendered", help="Rendered image path."),
+    rendered_path: Path | None = typer.Option(None, "--rendered", help="Rendered image path for final-stage evaluation."),
     plan_json: Path | None = typer.Option(None, "--plan-json", help="Bubble plan JSON path."),
     input_path: Path | None = typer.Option(None, "--input", "-i", help="Input image path."),
     dialogue: str | None = typer.Option(None, "--dialogue", "-d", help="Dialogue text. Defaults to metadata/plan."),
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
+    stage: str = typer.Option("final", "--stage", help="Evaluation stage: final or text."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer for text-stage preview."),
+    font: Path | None = typer.Option(None, "--font", help="Font file path."),
+    font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
+    font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
+    text_letter_spacing: str = typer.Option("-1px", "--text-letter-spacing", help="Letter spacing for text renderer."),
+    text_word_spacing: str = typer.Option("0", "--text-word-spacing", help="Word spacing for text renderer."),
+    resvg_tu_override: bool = typer.Option(
+        True,
+        "--resvg-tu-override/--no-resvg-tu-override",
+        help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
+    ),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
     try:
         metadata = _load_metadata(files.metadata)
-        if not rendered_path.exists():
-            raise RuntimeError(f"rendered image not found: {rendered_path}")
         image_path = _resolve_input_path(input_path, metadata)
         plan_path = plan_json if plan_json is not None else files.plan
         if not plan_path.exists():
             raise RuntimeError(f"plan JSON not found: {plan_path}")
         plan_dialogue_lines, plans = load_plan_json(plan_path)
+        evaluated_stage = _validate_evaluate_stage(stage)
 
         dialogue_lines: list[str]
         if dialogue and dialogue.strip():
@@ -424,27 +447,59 @@ def evaluate(
             raise RuntimeError("dialogue does not match plan JSON dialogue_lines")
 
         resolved_server = _resolve_server(server)
-        _log(state, f"running evaluate via {resolved_server}")
-        evaluation = evaluate_rendered_result(
+        validated_text_renderer = _validate_text_renderer(text_renderer)
+
+        preview_path: Path
+        text_bboxes: list[tuple[int, int, int, int]] | None = None
+        if evaluated_stage == "final":
+            if rendered_path is None:
+                raise RuntimeError("--rendered is required when --stage final")
+            if not rendered_path.exists():
+                raise RuntimeError(f"rendered image not found: {rendered_path}")
+            preview_path = rendered_path
+            _log(state, f"running final-stage evaluate via {resolved_server}")
+        else:
+            preview_path = state.workspace / "evaluate_text_stage.png"
+            _log(state, f"rendering text-stage preview: {preview_path}")
+            text_bboxes = render_text_stage_preview(
+                image_path=image_path,
+                output_path=preview_path,
+                plans=plans,
+                font_path=pick_font_path(font),
+                font_family=font_family,
+                font_size=font_size,
+                text_renderer=validated_text_renderer,
+                text_letter_spacing=text_letter_spacing,
+                text_word_spacing=text_word_spacing,
+                resvg_tu_override=resvg_tu_override,
+            )
+            _log(state, f"running text-stage evaluate via {resolved_server}")
+        evaluation = evaluate_preview_result(
             server=resolved_server,
             model=model,
             temperature=temperature,
             dialogue_lines=dialogue_lines,
             plans=plans,
             original_image_path=image_path,
-            rendered_image_path=rendered_path,
+            preview_image_path=preview_path,
+            stage=evaluated_stage,
+            text_bboxes=text_bboxes if evaluated_stage == "text" else None,
         )
+        result_path = state.workspace / f"evaluate_{evaluated_stage}_result.json"
         payload = {
             "stage": "evaluate",
             "workspace": str(state.workspace),
             "input_image": str(image_path),
-            "rendered_image": str(rendered_path),
+            "evaluate_stage": evaluated_stage,
+            "rendered_image": str(preview_path),
             "plan_file": str(plan_path),
+            "result_file": str(result_path),
             "server": resolved_server,
             "model": model,
             "dialogue_lines": dialogue_lines,
             **evaluation,
         }
+        _save_json(result_path, payload)
         typer.echo(json.dumps(payload, ensure_ascii=False))
     except Exception as exc:  # noqa: BLE001
         message = str(exc) if str(exc) else exc.__class__.__name__
