@@ -1,0 +1,8 @@
+{
+  "default_type": "ellipse",
+  "types": {
+    "ellipse": "bubble_ellipse.svg",
+    "square": "bubble_square.svg",
+    "narration": "bubble_narration_square.svg"
+  }
+}

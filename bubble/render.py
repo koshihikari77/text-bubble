@@ -18,6 +18,7 @@ from bubble.assets import (
     load_bubble_svg_source,
     render_raw_svg_with_resvg,
     render_svg_with_resvg,
+    resolve_bubble_asset,
     resolve_chromium_executable,
     resolve_resvg_executable,
     warp_svg_source_to_aspect,
@@ -55,6 +56,7 @@ class RenderedBubble:
     text_overlay: TextRenderResult
     bubble_layout: dict[str, int]
     bubble_image: Image.Image
+    bubble_asset: Path
 
 
 @dataclass
@@ -448,6 +450,8 @@ def _has_explicit_speaker_id(value: str) -> bool:
 
 
 def _should_merge_bubbles(left: RenderedBubble, right: RenderedBubble) -> bool:
+    if left.plan.bubble_type != right.plan.bubble_type:
+        return False
     if not _has_explicit_speaker_id(left.plan.speaker_id) or not _has_explicit_speaker_id(right.plan.speaker_id):
         return False
     if left.plan.speaker_id != right.plan.speaker_id:
@@ -501,10 +505,10 @@ def _render_merged_group_image(
     *,
     group: list[RenderedBubble],
     bubble_renderer: str,
-    bubble_asset: Path,
     browser: Any | None,
     resvg_executable: str | None,
 ) -> tuple[Image.Image, int, int]:
+    bubble_asset = group[0].bubble_asset
     placements = [
         {
             "left": item.bubble_layout["bubble_left"],
@@ -651,7 +655,7 @@ def render_bubbles(
     plans: list[BubblePlan],
     font_path: str | None,
     font_family: str | None,
-    bubble_asset: Path,
+    bubble_asset_override: Path | None,
     font_size: int,
     text_renderer: str,
     bubble_renderer: str,
@@ -721,6 +725,12 @@ def render_bubbles(
 
         rendered_bubbles: list[RenderedBubble] = []
         for prepared in prepared_bubbles:
+            bubble_asset = resolve_bubble_asset(
+                str(bubble_asset_override) if bubble_asset_override is not None else None,
+                bubble_type=prepared.plan.bubble_type,
+            )
+            if bubble_asset is None:
+                raise RuntimeError(f"bubble asset not found for type: {prepared.plan.bubble_type}")
             bubble_image = _resolve_bubble_image(
                 bubble_renderer=bubble_renderer,
                 bubble_asset=bubble_asset,
@@ -736,11 +746,13 @@ def render_bubbles(
                     text_overlay=prepared.text_overlay,
                     bubble_layout=prepared.bubble_layout,
                     bubble_image=bubble_image,
+                    bubble_asset=bubble_asset,
                 )
             )
 
         for group in _group_bubbles_for_merge(rendered_bubbles):
-            use_vector_group_render = bubble_asset.suffix.lower() in {".svg", ".txt"}
+            group_asset = group[0].bubble_asset
+            use_vector_group_render = group_asset.suffix.lower() in {".svg", ".txt"}
             if len(group) == 1 and not use_vector_group_render:
                 item = group[0]
                 alpha_composite_clipped(
@@ -753,7 +765,6 @@ def render_bubbles(
             merged_image, left, top = _render_merged_group_image(
                 group=group,
                 bubble_renderer=bubble_renderer,
-                bubble_asset=bubble_asset,
                 browser=browser,
                 resvg_executable=resvg_executable,
             )

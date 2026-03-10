@@ -28,6 +28,7 @@ BUBBLE_STROKE_COLOR = "#111111"
 TEXT_COLOR = "#111111"
 TEXT_SHADOW = "none"
 SVG_NS = "http://www.w3.org/2000/svg"
+DEFAULT_BUBBLE_TYPE = "ellipse"
 
 
 @dataclass
@@ -37,6 +38,7 @@ class BubblePlan:
     sentence_ids: list[int]
     columns: list[str]
     speaker_id: str = ""
+    bubble_type: str = DEFAULT_BUBBLE_TYPE
 
 
 @dataclass
@@ -59,6 +61,7 @@ class SceneBubblePlan:
     anchor_y: float
     sentence_ids: list[int]
     speaker_id: str = ""
+    bubble_type: str = DEFAULT_BUBBLE_TYPE
 
 
 @dataclass
@@ -76,6 +79,7 @@ def bubble_plan_to_dict(plan: BubblePlan) -> dict[str, Any]:
         "sentence_ids": plan.sentence_ids,
         "columns": plan.columns,
         "speaker_id": plan.speaker_id,
+        "bubble_type": plan.bubble_type,
     }
 
 
@@ -122,6 +126,7 @@ def scene_bubble_plan_to_dict(plan: SceneBubblePlan) -> dict[str, Any]:
         "anchor_y": plan.anchor_y,
         "sentence_ids": plan.sentence_ids,
         "speaker_id": plan.speaker_id,
+        "bubble_type": plan.bubble_type,
     }
 
 

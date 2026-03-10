@@ -410,7 +410,7 @@ def render(
     input_path: Path | None = typer.Option(None, "--input", "-i", help="Input image path."),
     font: Path | None = typer.Option(None, "--font", help="Font file path."),
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
-    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
+    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Override bubble asset path for all bubble types."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
     text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
     bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
@@ -642,7 +642,7 @@ def run(
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
     font: Path | None = typer.Option(None, "--font", help="Font file path."),
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
-    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
+    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Override bubble asset path for all bubble types."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
     text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
     bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
@@ -792,7 +792,7 @@ def full(
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
     font: Path | None = typer.Option(None, "--font", help="Font file path."),
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
-    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Bubble asset path."),
+    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Override bubble asset path for all bubble types."),
     font_size: int = typer.Option(0, "--font-size", help="Override vertical text font size."),
     text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
     bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
@@ -827,8 +827,8 @@ def full(
         save_plan_json(files.plan, dialogue_lines, plans)
 
         resolved_font_path = pick_font_path(str(font) if font is not None else None)
-        resolved_bubble_asset = resolve_bubble_asset(str(bubble_asset) if bubble_asset is not None else None)
-        if resolved_bubble_asset is None:
+        bubble_asset_override = resolve_bubble_asset(str(bubble_asset)) if bubble_asset is not None else None
+        if bubble_asset is not None and bubble_asset_override is None:
             raise RuntimeError(f"bubble asset not found: {bubble_asset}")
         _log(state, "rendering bubbles")
         render_bubbles(
@@ -837,7 +837,7 @@ def full(
             plans=plans,
             font_path=resolved_font_path,
             font_family=font_family,
-            bubble_asset=resolved_bubble_asset,
+            bubble_asset_override=bubble_asset_override,
             font_size=font_size,
             text_renderer=validated_text_renderer,
             bubble_renderer=validated_bubble_renderer,

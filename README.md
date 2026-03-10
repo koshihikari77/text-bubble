@@ -75,8 +75,16 @@ apt-get install -y resvg
 - `--server` 省略時は `TEXT_BUBBLE_SERVER`、未設定なら `http://127.0.0.1:8080/v1`
 - `render/run/full` は `--text-renderer resvg-hybrid|browser`（デフォルト `resvg-hybrid`）
 - `render/run/full` は `--bubble-renderer resvg|browser`（デフォルト `resvg`）
+- `render/run/full` の `--bubble-asset` は全吹き出しタイプに対する override
 - `resvg-hybrid` の調整は `--text-letter-spacing`（既定 `-1px`）, `--text-word-spacing`（既定 `0`）, `--resvg-tu-override/--no-resvg-tu-override`
 - `reflow/run` は `--reflow-workers` で並列度を指定（デフォルト `4`）
+
+吹き出しタイプ:
+
+- `scene.json` / `plan.json` の各 bubble は任意で `bubble_type` を持てる
+- 未指定時は `ellipse`
+- 組み込みタイプは `ellipse`, `square`, `narration`（`narration` は角丸なしの正方形 SVG）
+- 対応表は `assets/bubble_assets.json`
 
 段階実行:
 

@@ -7,6 +7,7 @@ from typing import Any
 from bubble.models import (
     AssignmentBubblePlan,
     BubblePlan,
+    DEFAULT_BUBBLE_TYPE,
     ReflowBubblePlan,
     SceneBubblePlan,
 )
@@ -44,6 +45,14 @@ def _normalize_speaker_id(value: Any, *, index: int, fallback_prefix: str) -> st
     if isinstance(value, str) and value.strip():
         return value.strip()
     return f"__{fallback_prefix}_{index}"
+
+
+def _normalize_bubble_type(value: Any, *, index: int, context: str) -> str:
+    if value is None:
+        return DEFAULT_BUBBLE_TYPE
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise RuntimeError(f"{context} {index} must include a non-empty bubble_type when provided")
 
 
 def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[BubblePlan]:
@@ -84,6 +93,7 @@ def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[Bu
                 sentence_ids=normalized_ids,
                 columns=normalized_columns,
                 speaker_id=_normalize_speaker_id(bubble.get("speaker_id"), index=index, fallback_prefix="plan"),
+                bubble_type=_normalize_bubble_type(bubble.get("bubble_type"), index=index, context="bubble"),
             )
         )
 
@@ -132,6 +142,7 @@ def extract_scene_plan(response: dict[str, Any], dialogue_lines: list[str]) -> l
                 anchor_y=float(bubble["anchor_y"]),
                 sentence_ids=normalized_ids,
                 speaker_id=_normalize_speaker_id(bubble.get("speaker_id"), index=index, fallback_prefix="scene"),
+                bubble_type=_normalize_bubble_type(bubble.get("bubble_type"), index=index, context="bubble"),
             )
         )
 
@@ -348,6 +359,7 @@ def compose_bubble_plans(
                 sentence_ids=scene_plan.sentence_ids,
                 columns=reflow_plan.columns,
                 speaker_id=scene_plan.speaker_id,
+                bubble_type=scene_plan.bubble_type,
             )
         )
     return sorted(composed, key=lambda plan: plan.sentence_ids[0])

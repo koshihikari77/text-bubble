@@ -277,7 +277,7 @@ def main() -> int:
             plans=plans,
             font_path=font_path,
             font_family=None,
-            bubble_asset=bubble_asset,
+            bubble_asset_override=bubble_asset,
             font_size=args.font_size,
             text_renderer=args.text_renderer,
             bubble_renderer=args.bubble_renderer,

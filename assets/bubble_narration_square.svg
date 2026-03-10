@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="660" viewBox="0 0 660 660">
+  <defs>
+    <style>
+      :root {
+        --stroke: #111;
+        --strokeW: 6;
+        --fill: #ffffff;
+        --fillOpacity: 0.88;
+      }
+
+      .bubble {
+        fill: var(--fill);
+        fill-opacity: var(--fillOpacity);
+        stroke: var(--stroke);
+        stroke-width: var(--strokeW);
+        stroke-linecap: square;
+        stroke-linejoin: miter;
+      }
+    </style>
+  </defs>
+
+  <path class="bubble" d="M 60 60 L 600 60 L 600 600 L 60 600 Z" />
+</svg>

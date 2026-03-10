@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
 import math
 import mimetypes
 import os
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,7 @@ from bubble.models import (
     BUBBLE_FILL_ALPHA_PNG,
     BUBBLE_FILL_OPACITY,
     BUBBLE_STROKE_COLOR,
+    DEFAULT_BUBBLE_TYPE,
     FONT_CANDIDATES,
     PROJECT_ROOT,
     SVG_NS,
@@ -33,6 +36,13 @@ ET.register_namespace("", SVG_NS)
 
 TRANSFORM_PATTERN = re.compile(r"([A-Za-z]+)\s*\(([^)]*)\)")
 MERGED_BUBBLE_STROKE_SCALE = 0.84
+BUBBLE_ASSET_MANIFEST = PROJECT_ROOT / "assets" / "bubble_assets.json"
+
+
+@dataclass(frozen=True)
+class BubbleAssetCatalog:
+    default_type: str
+    assets: dict[str, Path]
 
 
 def pick_font_path(explicit: str | None) -> str | None:
@@ -107,25 +117,68 @@ def build_font_css(font_path: str | None, font_family: str | None) -> tuple[str,
     return "", fallback
 
 
-def resolve_bubble_asset(explicit: str | None) -> Path | None:
+def _legacy_bubble_asset_candidates() -> list[Path]:
+    return [
+        PROJECT_ROOT / "assets" / "bubble_ellipse.svg",
+        PROJECT_ROOT / "resources" / "bubble.svg",
+        PROJECT_ROOT / "resources" / "bubble.png",
+        PROJECT_ROOT / "resources" / "bubble_svg.txt",
+        PROJECT_ROOT / "imgs" / "bubble.svg",
+        PROJECT_ROOT / "imgs" / "bubble.png",
+        Path("/notebooks/imgs/bubble.svg"),
+        Path("/notebooks/imgs/bubble.png"),
+        Path("/notebooks/resources/bubble.svg"),
+        Path("/notebooks/resources/bubble.png"),
+        Path("/notebooks/resources/bubble_svg.txt"),
+    ]
+
+
+def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetCatalog:
+    path = manifest_path or BUBBLE_ASSET_MANIFEST
+    if not path.exists():
+        legacy_asset = next((candidate for candidate in _legacy_bubble_asset_candidates() if candidate.exists()), None)
+        assets = {DEFAULT_BUBBLE_TYPE: legacy_asset} if legacy_asset is not None else {}
+        return BubbleAssetCatalog(default_type=DEFAULT_BUBBLE_TYPE, assets=assets)
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError(f"bubble asset manifest must be an object: {path}")
+    default_type = data.get("default_type")
+    if not isinstance(default_type, str) or not default_type.strip():
+        raise RuntimeError(f"bubble asset manifest must include non-empty default_type: {path}")
+    raw_assets = data.get("types")
+    if not isinstance(raw_assets, dict) or not raw_assets:
+        raise RuntimeError(f"bubble asset manifest must include a non-empty types object: {path}")
+
+    resolved_assets: dict[str, Path] = {}
+    for bubble_type, raw_path in raw_assets.items():
+        if not isinstance(bubble_type, str) or not bubble_type.strip():
+            raise RuntimeError(f"bubble asset manifest type keys must be non-empty strings: {path}")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raise RuntimeError(f"bubble asset manifest entry must be a non-empty path string: {path}")
+        asset_path = Path(raw_path)
+        if not asset_path.is_absolute():
+            asset_path = (path.parent / asset_path).resolve()
+        resolved_assets[bubble_type.strip()] = asset_path
+
+    default_type = default_type.strip()
+    if default_type not in resolved_assets:
+        raise RuntimeError(f"default bubble type is missing from manifest: {default_type}")
+    return BubbleAssetCatalog(default_type=default_type, assets=resolved_assets)
+
+
+def resolve_bubble_asset(explicit: str | None, bubble_type: str | None = None) -> Path | None:
     candidates = []
     if explicit:
         candidates.append(Path(explicit))
-    candidates.extend(
-        [
-            PROJECT_ROOT / "assets" / "bubble_ellipse.svg",
-            PROJECT_ROOT / "resources" / "bubble.svg",
-            PROJECT_ROOT / "resources" / "bubble.png",
-            PROJECT_ROOT / "resources" / "bubble_svg.txt",
-            PROJECT_ROOT / "imgs" / "bubble.svg",
-            PROJECT_ROOT / "imgs" / "bubble.png",
-            Path("/notebooks/imgs/bubble.svg"),
-            Path("/notebooks/imgs/bubble.png"),
-            Path("/notebooks/resources/bubble.svg"),
-            Path("/notebooks/resources/bubble.png"),
-            Path("/notebooks/resources/bubble_svg.txt"),
-        ]
-    )
+    else:
+        catalog = load_bubble_asset_catalog()
+        normalized_type = bubble_type.strip() if isinstance(bubble_type, str) and bubble_type.strip() else catalog.default_type
+        resolved = catalog.assets.get(normalized_type)
+        if resolved is not None:
+            candidates.append(resolved)
+        if normalized_type == catalog.default_type:
+            candidates.extend(_legacy_bubble_asset_candidates())
     for candidate in candidates:
         if candidate.exists():
             return candidate
