@@ -94,6 +94,7 @@ def _run_single(args: argparse.Namespace, image_stem: str, dialogue_index: int) 
     person_mask_array = _load_binary_mask(person_mask)
     chest_mask = _optional_mask_arg(args.mask_root, image_stem, "chest", person_mask_array)
     lower_mask = _optional_mask_arg(args.mask_root, image_stem, "lower", person_mask_array)
+    head_mask = _optional_mask_arg(args.mask_root, image_stem, "head", person_mask_array)
 
     cmd = [
         sys.executable,
@@ -121,6 +122,8 @@ def _run_single(args: argparse.Namespace, image_stem: str, dialogue_index: int) 
         cmd.extend(["--chest-mask", str(chest_mask)])
     if lower_mask is not None:
         cmd.extend(["--lower-mask", str(lower_mask)])
+    if head_mask is not None:
+        cmd.extend(["--head-mask", str(head_mask)])
     if args.bubble_asset:
         cmd.extend(["--bubble-asset", args.bubble_asset])
     subprocess.run(cmd, check=True, cwd=ROOT_DIR)

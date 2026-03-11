@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--person-mask", required=True, help="Person mask path")
     parser.add_argument("--chest-mask", help="Chest mask path")
     parser.add_argument("--lower-mask", help="Lower body mask path")
+    parser.add_argument("--head-mask", help="Head/hair mask path")
     parser.add_argument("--solver", choices=sorted(SOLVER_MODULES), default="beam", help="Placement solver")
     parser.add_argument("--out-dir", required=True, help="Output directory")
     parser.add_argument("--font-size", type=int, default=0, help="Override estimated font size")
@@ -78,6 +79,7 @@ def main() -> int:
     person_mask_path = Path(args.person_mask).resolve()
     chest_mask_path = Path(args.chest_mask).resolve() if args.chest_mask else None
     lower_mask_path = Path(args.lower_mask).resolve() if args.lower_mask else None
+    head_mask_path = Path(args.head_mask).resolve() if args.head_mask else None
     out_dir = Path(args.out_dir).resolve()
     scene_path = out_dir / "scene.json"
     debug_overlay_path = out_dir / "debug_overlay.png"
@@ -95,6 +97,7 @@ def main() -> int:
     person_mask = solver_module.load_binary_mask(person_mask_path)
     chest_mask = solver_module.load_binary_mask(chest_mask_path) if chest_mask_path is not None else None
     lower_mask = solver_module.load_binary_mask(lower_mask_path) if lower_mask_path is not None else None
+    head_mask = solver_module.load_binary_mask(head_mask_path) if head_mask_path is not None else None
     if face_mask.shape != (image_height, image_width):
         raise RuntimeError("face mask size does not match image size")
     if person_mask.shape != (image_height, image_width):
@@ -103,6 +106,8 @@ def main() -> int:
         raise RuntimeError("chest mask size does not match image size")
     if lower_mask is not None and lower_mask.shape != (image_height, image_width):
         raise RuntimeError("lower mask size does not match image size")
+    if head_mask is not None and head_mask.shape != (image_height, image_width):
+        raise RuntimeError("head mask size does not match image size")
 
     body_regions = solver_module.build_body_regions(
         person_mask,
@@ -120,6 +125,7 @@ def main() -> int:
             person_mask=person_mask,
             chest_mask=chest_mask,
             lower_mask=lower_mask,
+            head_mask=head_mask,
             font_size=font_size,
         )
     except Exception as exc:  # noqa: BLE001
@@ -138,6 +144,7 @@ def main() -> int:
                 "person_mask": str(person_mask_path),
                 "chest_mask": str(chest_mask_path) if chest_mask_path is not None else None,
                 "lower_mask": str(lower_mask_path) if lower_mask_path is not None else None,
+                "head_mask": str(head_mask_path) if head_mask_path is not None else None,
                 "font_size": font_size,
                 "body_regions": body_regions.to_debug_dict(),
             }
@@ -181,6 +188,7 @@ def main() -> int:
             "person_mask": str(person_mask_path),
             "chest_mask": str(chest_mask_path) if chest_mask_path is not None else None,
             "lower_mask": str(lower_mask_path) if lower_mask_path is not None else None,
+            "head_mask": str(head_mask_path) if head_mask_path is not None else None,
             "font_size": font_size,
             "output_scene_json": str(scene_path),
             "render_output": str(rendered_output_path),
