@@ -69,19 +69,33 @@ ALL_SLOTS: tuple[str, ...] = (
 )
 READING_MODEL = "rtl-columns"
 OBJECTIVE_SCALE = 100
-MAX_SOLVE_SECONDS = 5.0
+MAX_SOLVE_SECONDS = 10.0
 NUM_SEARCH_WORKERS = 8
 MAX_CANDIDATES_PER_SLOT = 8
 MAX_CANDIDATES_PER_BUBBLE = 42
 TWO_BUBBLE_SAME_SIDE_PENALTY = 420.0
 FACE_SIDE_NEAR_BAND_WEIGHT = 9.0
 FACE_SIDE_FAR_BAND_WEIGHT = 3.2
-SIDE_BALANCE_WEIGHT = 1600.0
+SIDE_BALANCE_WEIGHT = 2200.0
 HORIZONTAL_SPAN_DEFICIT_WEIGHT = 4.0
 VERTICAL_SPAN_DEFICIT_WEIGHT = 1.4
 FIRST_BUBBLE_RIGHTWARD_WEIGHT = 1.8
 FIRST_BUBBLE_TOPWARD_WEIGHT = 1.2
 FIRST_BUBBLE_SLOT_PENALTY = 220.0
+SAME_SLOT_REPEAT_PENALTY = 640.0
+SAME_ROW_REPEAT_PENALTY = 180.0
+SAME_SIDE_MIN_TOP_STEP_WEIGHT = 8.0
+LEFT_START_BELOW_RIGHT_WEIGHT = 7.4
+NEXT_COLUMN_RESET_DOWNWARD_WEIGHT = 3.8
+LATER_BUBBLE_TOP_ROW_PENALTY = 950.0
+
+
+def _slot_row(slot: str) -> str:
+    if slot.startswith("top-"):
+        return "top"
+    if slot.startswith("mid-"):
+        return "mid"
+    return "bottom"
 
 
 @dataclass(frozen=True)
@@ -170,6 +184,21 @@ def _first_bubble_penalties(
     top_target = max(18, int(round(image_height * 0.08)))
     if choice.text_box.top > top_target:
         penalties["first_bubble_topward"] = (choice.text_box.top - top_target) * FIRST_BUBBLE_TOPWARD_WEIGHT
+    return penalties
+
+
+def _later_bubble_row_penalties(
+    *,
+    choice: PlacementChoice,
+    bubble_index: int,
+    bubble_count: int,
+) -> dict[str, float]:
+    if bubble_count < 4 or bubble_index < 2:
+        return {}
+    penalties: dict[str, float] = {}
+    row = _slot_row(choice.slot)
+    if row == "top":
+        penalties["later_bubble_top_row"] = (bubble_index - 1) * LATER_BUBBLE_TOP_ROW_PENALTY
     return penalties
 
 
@@ -287,6 +316,13 @@ def _prepare_candidate_options(
                     bubble_count=bubble_count,
                 )
             )
+            extra_penalties.update(
+                _later_bubble_row_penalties(
+                    choice=choice,
+                    bubble_index=bubble_index,
+                    bubble_count=bubble_count,
+                )
+            )
             if extra_penalties:
                 choice.penalties.update(extra_penalties)
                 choice.total_score += sum(extra_penalties.values())
@@ -340,11 +376,15 @@ def _pairwise_penalties(
     horizontal_gap = prev_choice.text_box.left - curr_choice.text_box.right
     vertical_gap = curr_choice.text_box.top - prev_choice.text_box.bottom
     same_side = slot_side(prev_choice.slot) == slot_side(curr_choice.slot)
+    top_step = curr_choice.text_box.top - prev_choice.text_box.top
 
     if x_delta < -x_tolerance:
         penalties["reading_rightward"] = (-x_delta - x_tolerance) * READING_RIGHTWARD_WEIGHT
 
     if same_side:
+        min_top_step = max(14, int(round(min(prev_choice.text_box.height, curr_choice.text_box.height) * 0.16)))
+        if top_step < min_top_step:
+            penalties["same_side_min_top_step"] = (min_top_step - top_step) * SAME_SIDE_MIN_TOP_STEP_WEIGHT
         if y_delta < -y_tolerance:
             penalties["reading_upward"] = (-y_delta - y_tolerance) * READING_UPWARD_WEIGHT
         desired_vertical_gap = max(4, int(round(min(prev_choice.text_box.height, curr_choice.text_box.height) * 0.04)))
@@ -356,6 +396,10 @@ def _pairwise_penalties(
             alignment_gap = abs(curr_choice.text_box.left - prev_choice.text_box.left)
         if alignment_gap > 0:
             penalties["same_side_alignment"] = alignment_gap * SAME_SIDE_ALIGN_WEIGHT
+        if prev_choice.slot == curr_choice.slot:
+            penalties["same_slot_repeat"] = SAME_SLOT_REPEAT_PENALTY
+        elif _slot_row(prev_choice.slot) == _slot_row(curr_choice.slot):
+            penalties["same_row_repeat"] = SAME_ROW_REPEAT_PENALTY
         if bubble_count == 2:
             penalties["two_bubble_same_side"] = TWO_BUBBLE_SAME_SIDE_PENALTY
     else:
