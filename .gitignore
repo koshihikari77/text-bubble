@@ -16,6 +16,10 @@ models/
 # Generated outputs
 out/
 smoke_test.png
+examples/
+imgs/test*.png
+imgs/masks/
+imgs/masks2/
 
 # OS/editor noise
 .DS_Store
