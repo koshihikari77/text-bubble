@@ -10,14 +10,6 @@ import typer
 
 from bubble import __version__
 from bubble.assets import pick_font_path, resolve_bubble_asset
-from bubble.evaluate import evaluate_preview_result, evaluate_rendered_result
-from bubble.infer import (
-    infer_assignment_plans,
-    infer_bubble_plans,
-    infer_reflow_plans,
-    infer_scene_bubble_plans,
-    split_dialogue_lines,
-)
 from bubble.models import (
     assignment_plans_payload,
     plans_payload,
@@ -28,17 +20,26 @@ from bubble.models import (
     save_scene_plan_json,
     scene_plans_payload,
 )
-from bubble.render import render_bubbles, render_text_stage_preview
+from bubble.scene_runtime import (
+    LLMRoute,
+    RenderConfig,
+    compose_scene_bundle,
+    infer_scene_stage,
+    render_scene_bundle,
+    resolve_scene_route,
+    run_pipeline as run_scene_pipeline,
+)
 from bubble.validation import (
-    compose_bubble_plans,
     load_assignment_plan_json,
     load_plan_json,
     load_reflow_plan_json,
     load_scene_plan_json,
 )
+from bubble.worker_client import worker_request
 
 
 DEFAULT_SERVER = "http://127.0.0.1:8080/v1"
+DEFAULT_WORKER_MODE = "auto"
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Generate manga-style vertical speech bubbles.")
 
@@ -150,9 +151,15 @@ def _resolve_server(explicit: str | None) -> str:
     return os.environ.get("TEXT_BUBBLE_SERVER", DEFAULT_SERVER)
 
 
+def _split_dialogue_lines(dialogue: str) -> list[str]:
+    from bubble.infer import split_dialogue_lines
+
+    return split_dialogue_lines(dialogue)
+
+
 def _resolve_dialogue_lines(dialogue: str | None, metadata: dict[str, Any]) -> list[str]:
     if dialogue and dialogue.strip():
-        lines = split_dialogue_lines(dialogue)
+        lines = _split_dialogue_lines(dialogue)
         if not lines:
             raise RuntimeError("dialogue must contain at least one non-empty line")
         return lines
@@ -179,6 +186,13 @@ def _resolve_input_path(input_path: Path | None, metadata: dict[str, Any]) -> Pa
 
 def _dialogue_text(dialogue_lines: list[str]) -> str:
     return "\n".join(dialogue_lines)
+
+
+def _validate_worker_mode(worker_mode: str) -> str:
+    normalized = worker_mode.strip().lower()
+    if normalized not in {"auto", "on", "off"}:
+        raise RuntimeError(f"unsupported worker mode: {worker_mode}")
+    return normalized
 
 
 def _validate_text_renderer(text_renderer: str) -> str:
@@ -208,6 +222,38 @@ def _validate_evaluate_stage(stage: str) -> str:
     return normalized
 
 
+def _default_route(server: str, model: str) -> LLMRoute:
+    return LLMRoute(server=server, model=model)
+
+
+def _render_config(
+    *,
+    font: Path | None,
+    font_family: str | None,
+    bubble_asset: Path | None,
+    font_size: int,
+    text_renderer: str,
+    bubble_renderer: str,
+    text_letter_spacing: str,
+    text_word_spacing: str,
+    resvg_tu_override: bool,
+) -> RenderConfig:
+    resolved_bubble_asset = resolve_bubble_asset(str(bubble_asset) if bubble_asset is not None else None)
+    if resolved_bubble_asset is None:
+        raise RuntimeError(f"bubble asset not found: {bubble_asset}")
+    return RenderConfig(
+        font_path=pick_font_path(str(font) if font is not None else None),
+        font_family=font_family,
+        bubble_asset=resolved_bubble_asset,
+        font_size=font_size,
+        text_renderer=text_renderer,
+        bubble_renderer=bubble_renderer,
+        text_letter_spacing=text_letter_spacing,
+        text_word_spacing=text_word_spacing,
+        resvg_tu_override=resvg_tu_override,
+    )
+
+
 @app.command()
 def assign(
     ctx: typer.Context,
@@ -219,6 +265,8 @@ def assign(
         metadata = _load_metadata(files.metadata)
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         _log(state, "running assignment")
+        from bubble.infer import infer_assignment_plans
+
         _, plans = infer_assignment_plans(_dialogue_text(dialogue_lines))
         save_assignment_plan_json(files.assignment, dialogue_lines, plans)
         metadata["dialogue_lines"] = dialogue_lines
@@ -256,6 +304,8 @@ def reflow(
         validated_reflow_workers = _validate_reflow_workers(reflow_workers)
         resolved_server = _resolve_server(server)
         _log(state, f"running reflow via {resolved_server}")
+        from bubble.infer import infer_reflow_plans
+
         _, plans = infer_reflow_plans(
             server=resolved_server,
             model=model,
@@ -288,7 +338,10 @@ def scene(
     dialogue: str | None = typer.Option(None, "--dialogue", "-d", help="Dialogue text. Defaults to workspace metadata."),
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
+    scene_server: str | None = typer.Option(None, "--scene-server", help="Override scene-stage llama-server API base URL."),
+    scene_model: str | None = typer.Option(None, "--scene-model", help="Override scene-stage model alias."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
+    use_worker: str = typer.Option(DEFAULT_WORKER_MODE, "--use-worker", help="Worker mode: auto, on, or off."),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
@@ -297,26 +350,54 @@ def scene(
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
         resolved_server = _resolve_server(server)
-        _log(state, f"running scene via {resolved_server}")
-        _, plans = infer_scene_bubble_plans(
-            image_path=image_path,
-            server=resolved_server,
-            model=model,
-            dialogue=_dialogue_text(dialogue_lines),
-            temperature=temperature,
+        worker_mode = _validate_worker_mode(use_worker)
+        scene_route = resolve_scene_route(
+            default_server=resolved_server,
+            default_model=model,
+            scene_server=scene_server,
+            scene_model=scene_model,
         )
-        save_scene_plan_json(files.scene, dialogue_lines, plans)
+        _log(state, f"running scene via {scene_route.server}")
+        response = worker_request(
+            "scene_stage",
+            {
+                "image_path": str(image_path),
+                "dialogue_lines": dialogue_lines,
+                "server": resolved_server,
+                "model": model,
+                "scene_server": scene_server,
+                "scene_model": scene_model,
+                "temperature": temperature,
+                "output_scene_path": str(files.scene),
+            },
+            mode=worker_mode,
+        )
+        if response is None:
+            _, plans = infer_scene_stage(
+                image_path=image_path,
+                dialogue_lines=dialogue_lines,
+                route=scene_route,
+                temperature=temperature,
+            )
+            save_scene_plan_json(files.scene, dialogue_lines, plans)
+            payload = {
+                "stage": "scene",
+                "workspace": str(state.workspace),
+                "output_file": str(files.scene),
+                "server": scene_route.server,
+                "model": scene_route.model,
+                **scene_plans_payload(dialogue_lines, plans),
+            }
+        else:
+            payload = {
+                "stage": "scene",
+                "workspace": str(state.workspace),
+                **{key: value for key, value in response.items() if key != "status"},
+            }
+            _, plans = load_scene_plan_json(files.scene)
         metadata["dialogue_lines"] = dialogue_lines
         metadata["input_image"] = str(image_path)
         _save_metadata(files.metadata, metadata)
-        payload = {
-            "stage": "scene",
-            "workspace": str(state.workspace),
-            "output_file": str(files.scene),
-            "server": resolved_server,
-            "model": model,
-            **scene_plans_payload(dialogue_lines, plans),
-        }
         _emit_success(state, payload, f"scene saved: {files.scene}")
     except Exception as exc:  # noqa: BLE001
         _emit_error(state, exc)
@@ -340,12 +421,14 @@ def render(
         "--resvg-tu-override/--no-resvg-tu-override",
         help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
     ),
+    use_worker: str = typer.Option(DEFAULT_WORKER_MODE, "--use-worker", help="Worker mode: auto, on, or off."),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
     try:
         validated_text_renderer = _validate_text_renderer(text_renderer)
         validated_bubble_renderer = _validate_bubble_renderer(bubble_renderer)
+        worker_mode = _validate_worker_mode(use_worker)
         if not files.scene.exists():
             raise RuntimeError(f"scene plan JSON not found: {files.scene}")
         if not files.reflow.exists():
@@ -357,27 +440,54 @@ def render(
         if scene_dialogue_lines != reflow_dialogue_lines:
             raise RuntimeError("scene JSON dialogue_lines do not match reflow JSON dialogue_lines")
         dialogue_lines = scene_dialogue_lines
-        plans = compose_bubble_plans(dialogue_lines, scene_plans, reflow_plans)
-        save_plan_json(files.plan, dialogue_lines, plans)
-        resolved_font_path = pick_font_path(str(font) if font is not None else None)
-        resolved_bubble_asset = resolve_bubble_asset(str(bubble_asset) if bubble_asset is not None else None)
-        if resolved_bubble_asset is None:
-            raise RuntimeError(f"bubble asset not found: {bubble_asset}")
         _log(state, "rendering bubbles")
-        render_bubbles(
-            image_path=image_path,
-            output_path=output_path,
-            plans=plans,
-            font_path=resolved_font_path,
-            font_family=font_family,
-            bubble_asset=resolved_bubble_asset,
-            font_size=font_size,
-            text_renderer=validated_text_renderer,
-            bubble_renderer=validated_bubble_renderer,
-            text_letter_spacing=text_letter_spacing,
-            text_word_spacing=text_word_spacing,
-            resvg_tu_override=resvg_tu_override,
+        response = worker_request(
+            "render_from_scene",
+            {
+                "image_path": str(image_path),
+                "scene_path": str(files.scene),
+                "reflow_path": str(files.reflow),
+                "output_path": str(output_path),
+                "plan_output_path": str(files.plan),
+                "font": str(font) if font is not None else None,
+                "font_family": font_family,
+                "bubble_asset": str(bubble_asset) if bubble_asset is not None else None,
+                "font_size": font_size,
+                "text_renderer": validated_text_renderer,
+                "bubble_renderer": validated_bubble_renderer,
+                "text_letter_spacing": text_letter_spacing,
+                "text_word_spacing": text_word_spacing,
+                "resvg_tu_override": resvg_tu_override,
+            },
+            mode=worker_mode,
         )
+        if response is None:
+            bundle = compose_scene_bundle(
+                dialogue_lines=dialogue_lines,
+                reflow_plans=reflow_plans,
+                scene_plans=scene_plans,
+                source="scene-json",
+            )
+            save_plan_json(files.plan, dialogue_lines, bundle.composed_plans)
+            render_scene_bundle(
+                image_path=image_path,
+                output_path=output_path,
+                bundle=bundle,
+                config=_render_config(
+                    font=font,
+                    font_family=font_family,
+                    bubble_asset=bubble_asset,
+                    font_size=font_size,
+                    text_renderer=validated_text_renderer,
+                    bubble_renderer=validated_bubble_renderer,
+                    text_letter_spacing=text_letter_spacing,
+                    text_word_spacing=text_word_spacing,
+                    resvg_tu_override=resvg_tu_override,
+                ),
+            )
+            plans = bundle.composed_plans
+        else:
+            _, plans = load_plan_json(files.plan)
         metadata["dialogue_lines"] = dialogue_lines
         metadata["input_image"] = str(image_path)
         _save_metadata(files.metadata, metadata)
@@ -448,6 +558,8 @@ def evaluate(
 
         resolved_server = _resolve_server(server)
         validated_text_renderer = _validate_text_renderer(text_renderer)
+        from bubble.evaluate import evaluate_preview_result
+        from bubble.render import render_text_stage_preview
 
         preview_path: Path
         text_bboxes: list[tuple[int, int, int, int]] | None = None
@@ -525,6 +637,8 @@ def run(
     dialogue: str | None = typer.Option(None, "--dialogue", "-d", help="Dialogue text. Defaults to workspace metadata."),
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
+    scene_server: str | None = typer.Option(None, "--scene-server", help="Override scene-stage llama-server API base URL."),
+    scene_model: str | None = typer.Option(None, "--scene-model", help="Override scene-stage model alias."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
     font: Path | None = typer.Option(None, "--font", help="Font file path."),
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
@@ -540,6 +654,7 @@ def run(
         help="Force manual upright rendering for known Tu punctuation in resvg-hybrid.",
     ),
     reflow_workers: int = typer.Option(4, "--reflow-workers", help="Parallel workers for reflow requests."),
+    use_worker: str = typer.Option(DEFAULT_WORKER_MODE, "--use-worker", help="Worker mode: auto, on, or off."),
 ) -> None:
     state: AppState = ctx.obj
     files = _workspace_files(state.workspace)
@@ -547,51 +662,21 @@ def run(
         validated_text_renderer = _validate_text_renderer(text_renderer)
         validated_bubble_renderer = _validate_bubble_renderer(bubble_renderer)
         validated_reflow_workers = _validate_reflow_workers(reflow_workers)
+        worker_mode = _validate_worker_mode(use_worker)
         metadata = _load_metadata(files.metadata)
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
         resolved_server = _resolve_server(server)
-
-        _log(state, "running assignment")
-        _, assignment_plans = infer_assignment_plans(_dialogue_text(dialogue_lines))
-        save_assignment_plan_json(files.assignment, dialogue_lines, assignment_plans)
-
-        _log(state, f"running reflow via {resolved_server}")
-        _, reflow_plans = infer_reflow_plans(
-            server=resolved_server,
-            model=model,
-            dialogue=_dialogue_text(dialogue_lines),
-            temperature=temperature,
-            assignment_plans=assignment_plans,
-            reflow_workers=validated_reflow_workers,
+        scene_route = resolve_scene_route(
+            default_server=resolved_server,
+            default_model=model,
+            scene_server=scene_server,
+            scene_model=scene_model,
         )
-        save_reflow_plan_json(files.reflow, dialogue_lines, reflow_plans)
-
-        _log(state, f"running scene via {resolved_server}")
-        _, scene_plans = infer_scene_bubble_plans(
-            image_path=image_path,
-            server=resolved_server,
-            model=model,
-            dialogue=_dialogue_text(dialogue_lines),
-            temperature=temperature,
-        )
-        save_scene_plan_json(files.scene, dialogue_lines, scene_plans)
-
-        plans = compose_bubble_plans(dialogue_lines, scene_plans, reflow_plans)
-        save_plan_json(files.plan, dialogue_lines, plans)
-
-        resolved_font_path = pick_font_path(str(font) if font is not None else None)
-        resolved_bubble_asset = resolve_bubble_asset(str(bubble_asset) if bubble_asset is not None else None)
-        if resolved_bubble_asset is None:
-            raise RuntimeError(f"bubble asset not found: {bubble_asset}")
-        _log(state, "rendering bubbles")
-        render_bubbles(
-            image_path=image_path,
-            output_path=output_path,
-            plans=plans,
-            font_path=resolved_font_path,
+        render_config = _render_config(
+            font=font,
             font_family=font_family,
-            bubble_asset=resolved_bubble_asset,
+            bubble_asset=bubble_asset,
             font_size=font_size,
             text_renderer=validated_text_renderer,
             bubble_renderer=validated_bubble_renderer,
@@ -599,25 +684,98 @@ def run(
             text_word_spacing=text_word_spacing,
             resvg_tu_override=resvg_tu_override,
         )
-
+        response = worker_request(
+            "run_pipeline",
+            {
+                "image_path": str(image_path),
+                "dialogue_lines": dialogue_lines,
+                "server": resolved_server,
+                "model": model,
+                "scene_server": scene_server,
+                "scene_model": scene_model,
+                "temperature": temperature,
+                "reflow_workers": validated_reflow_workers,
+                "font": str(font) if font is not None else None,
+                "font_family": font_family,
+                "bubble_asset": str(bubble_asset) if bubble_asset is not None else None,
+                "font_size": font_size,
+                "text_renderer": validated_text_renderer,
+                "bubble_renderer": validated_bubble_renderer,
+                "text_letter_spacing": text_letter_spacing,
+                "text_word_spacing": text_word_spacing,
+                "resvg_tu_override": resvg_tu_override,
+                "assignment_path": str(files.assignment),
+                "reflow_path": str(files.reflow),
+                "scene_path": str(files.scene),
+                "plan_path": str(files.plan),
+                "output_path": str(output_path),
+            },
+            mode=worker_mode,
+        )
+        if response is None:
+            result = run_scene_pipeline(
+                image_path=image_path,
+                dialogue_lines=dialogue_lines,
+                default_route=_default_route(resolved_server, model),
+                scene_route=scene_route,
+                temperature=temperature,
+                reflow_workers=validated_reflow_workers,
+                image_width=0,
+                image_height=0,
+                face_mask=None,
+                person_mask=None,
+                chest_mask=None,
+                lower_mask=None,
+                head_mask=None,
+                font_size=font_size,
+            )
+            save_assignment_plan_json(files.assignment, dialogue_lines, result.assignment_plans)
+            save_reflow_plan_json(files.reflow, dialogue_lines, result.reflow_plans)
+            save_scene_plan_json(files.scene, dialogue_lines, result.scene_bundle.scene_plans)
+            save_plan_json(files.plan, dialogue_lines, result.scene_bundle.composed_plans)
+            _log(state, "rendering bubbles")
+            render_scene_bundle(
+                image_path=image_path,
+                output_path=output_path,
+                bundle=result.scene_bundle,
+                config=render_config,
+            )
+            plans = result.scene_bundle.composed_plans
+            payload = {
+                "stage": "run",
+                "workspace": str(state.workspace),
+                "output_file": str(output_path),
+                "assignment_file": str(files.assignment),
+                "reflow_file": str(files.reflow),
+                "scene_file": str(files.scene),
+                "plan_file": str(files.plan),
+                "server": result.default_route.server,
+                "model": result.default_route.model,
+                "scene_server": result.scene_route.server,
+                "scene_model": result.scene_route.model,
+                "text_renderer": validated_text_renderer,
+                "bubble_renderer": validated_bubble_renderer,
+                "text_letter_spacing": text_letter_spacing,
+                "text_word_spacing": text_word_spacing,
+                "resvg_tu_override": resvg_tu_override,
+                "reflow_workers": result.reflow_workers,
+                **plans_payload(dialogue_lines, plans),
+            }
+        else:
+            _, plans = load_plan_json(files.plan)
+            payload = {
+                "stage": "run",
+                "workspace": str(state.workspace),
+                "text_renderer": validated_text_renderer,
+                "bubble_renderer": validated_bubble_renderer,
+                "text_letter_spacing": text_letter_spacing,
+                "text_word_spacing": text_word_spacing,
+                "resvg_tu_override": resvg_tu_override,
+                **{key: value for key, value in response.items() if key != "status"},
+            }
         metadata["dialogue_lines"] = dialogue_lines
         metadata["input_image"] = str(image_path)
         _save_metadata(files.metadata, metadata)
-        payload = {
-            "stage": "run",
-            "workspace": str(state.workspace),
-            "output_file": str(output_path),
-            "plan_file": str(files.plan),
-            "server": resolved_server,
-            "model": model,
-            "text_renderer": validated_text_renderer,
-            "bubble_renderer": validated_bubble_renderer,
-            "text_letter_spacing": text_letter_spacing,
-            "text_word_spacing": text_word_spacing,
-            "resvg_tu_override": resvg_tu_override,
-            "reflow_workers": validated_reflow_workers,
-            **plans_payload(dialogue_lines, plans),
-        }
         _emit_success(state, payload, f"run completed: {output_path}")
     except Exception as exc:  # noqa: BLE001
         _emit_error(state, exc)
@@ -656,6 +814,9 @@ def full(
         image_path = _resolve_input_path(input_path, metadata)
         resolved_server = _resolve_server(server)
         _log(state, f"running full plan via {resolved_server}")
+        from bubble.infer import infer_bubble_plans
+        from bubble.render import render_bubbles
+
         _, plans = infer_bubble_plans(
             image_path=image_path,
             server=resolved_server,

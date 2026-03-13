@@ -120,7 +120,15 @@ text-bubble -w out/run1 evaluate \
 
 - `evaluate` は `json_schema` 付き1回実行（fallback なし）。
 - サーバー実装によっては、複数バブルの評価で `HTTP 500: Failed to parse input at pos 0` が返る場合がある。
+- `scene/run` は `--scene-server`, `--scene-model` で scene 段だけ別 routing にできる。
+- `scene/run/render` は `--use-worker auto|on|off` でローカル worker 経由の実行を切り替えられる。
 - 速度面の最適化 TODO は `docs/ideas/render_perf_todo.md` を参照。
+
+## Scene Placement PoC
+
+`scripts/poc_scene_place_from_masks.py` を起点に、`reflow.json + image + body masks` から `scene.json -> rendered.png` を作る PoC を持っています。  
+PoC では `beam`, `cp-sat`, `cp-sat-codex`, `codex-first` を試せますが、2026-03-13 時点では `Codex` 系はまだ experimental で、品質は安定していません。  
+本線として見るべきなのは、幾何制約ベースの `cp-sat` と、その runtime/worker 整理です。
 
 ## 旧CLI
 
