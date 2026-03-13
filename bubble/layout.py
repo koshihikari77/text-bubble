@@ -1,15 +1,172 @@
 from __future__ import annotations
 
-from bubble.models import BubblePlan, TEXT_COLUMN_GAP_RATIO
+import math
+import os
+from functools import lru_cache
+
+from bubble.glyph_paths import HarfBuzzGlyphPathRenderer
+from bubble.models import BubblePlan, FONT_CANDIDATES, TEXT_COLUMN_GAP_RATIO
+from bubble.vertical_uax import classify_text_clusters
 
 
-def build_text_metrics(font_size: int, columns: list[str]) -> dict[str, int]:
+DEFAULT_TEXT_LETTER_SPACING_PX = -1.0
+
+
+def _resolve_metric_font_path(font_path: str | None) -> str | None:
+    if font_path and os.path.exists(font_path):
+        return font_path
+    for candidate in FONT_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=8)
+def _get_path_renderer(font_path: str | None) -> HarfBuzzGlyphPathRenderer | None:
+    if not font_path:
+        return None
+    try:
+        return HarfBuzzGlyphPathRenderer(font_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _shape_bounds_px(
+    *,
+    renderer: HarfBuzzGlyphPathRenderer,
+    text: str,
+    font_size: int,
+    direction: str,
+    features: dict[str, int] | None,
+    rotate_90: bool,
+) -> tuple[float, float] | None:
+    shaped = renderer.shape_path(
+        text,
+        direction=direction,
+        script="Jpan",
+        language="ja",
+        features=features,
+    )
+    if shaped.bounds is None:
+        return None
+    x_min, y_min, x_max, y_max = shaped.bounds
+    scale = float(font_size) / float(max(1, int(shaped.upem)))
+    width = max(1.0, float(x_max - x_min) * scale)
+    height = max(1.0, float(y_max - y_min) * scale)
+    if rotate_90:
+        return height, width
+    return width, height
+
+
+def _measure_vertical_column(
+    *,
+    column: str,
+    font_size: int,
+    font_path: str | None,
+    letter_spacing_px: float,
+    resvg_tu_override: bool,
+) -> tuple[int, int]:
+    if not column:
+        return 0, 0
     em = max(font_size, 24)
-    char_step = max(24, int(round(em * 1.08)))
-    column_width = max(26, int(round(em * 1.0)))
+    nominal_column_width = max(26.0, float(int(round(em * 1.0))))
+    grid_step = float(max(16, int(round(float(font_size) + letter_spacing_px))))
+    decisions = classify_text_clusters(
+        column,
+        font_path=font_path,
+        resvg_tu_override=resvg_tu_override,
+    )
+    if not decisions:
+        return int(round(nominal_column_width)), 0
+
+    renderer = _get_path_renderer(font_path)
+    width_pad = max(2.0, em * 0.08)
+    height_pad = max(2.0, em * 0.05)
+    min_x = math.inf
+    max_x = -math.inf
+    min_y = math.inf
+    max_y = -math.inf
+    pen_y = 0.0
+
+    for decision in decisions:
+        bounds: tuple[float, float] | None = None
+        if renderer is not None:
+            if decision.action == "safe":
+                bounds = _shape_bounds_px(
+                    renderer=renderer,
+                    text=decision.cluster,
+                    font_size=font_size,
+                    direction="ttb",
+                    features={"vert": 1, "vrt2": 1},
+                    rotate_90=False,
+                )
+            elif decision.action == "manual_sideways":
+                bounds = _shape_bounds_px(
+                    renderer=renderer,
+                    text=decision.cluster,
+                    font_size=font_size,
+                    direction="ltr",
+                    features=None,
+                    rotate_90=True,
+                )
+            else:
+                bounds = _shape_bounds_px(
+                    renderer=renderer,
+                    text=decision.cluster,
+                    font_size=font_size,
+                    direction="ltr",
+                    features=None,
+                    rotate_90=False,
+                )
+
+        if bounds is None:
+            bounds = (nominal_column_width * 0.82, grid_step * 0.82)
+
+        glyph_width = max(1.0, bounds[0] + width_pad)
+        glyph_height = max(1.0, bounds[1] + height_pad)
+        center_y = pen_y + grid_step / 2.0
+        min_x = min(min_x, -glyph_width / 2.0)
+        max_x = max(max_x, glyph_width / 2.0)
+        min_y = min(min_y, center_y - glyph_height / 2.0)
+        max_y = max(max_y, center_y + glyph_height / 2.0)
+        pen_y += grid_step
+
+    measured_width = max(1.0, max_x - min_x)
+    measured_height = max(1.0, max_y - min_y)
+    return int(math.ceil(measured_width)), int(math.ceil(measured_height))
+
+
+def build_text_metrics(
+    font_size: int,
+    columns: list[str],
+    *,
+    font_path: str | None = None,
+    letter_spacing_px: float = DEFAULT_TEXT_LETTER_SPACING_PX,
+    resvg_tu_override: bool = True,
+) -> dict[str, int]:
+    em = max(font_size, 24)
+    char_step = max(16, int(round(float(font_size) + letter_spacing_px)))
     column_gap = max(4, int(round(em * TEXT_COLUMN_GAP_RATIO)))
+    resolved_font_path = _resolve_metric_font_path(font_path)
+
+    measured_column_width = 0
+    measured_block_height = 0
+    for column in columns:
+        column_width_px, column_height_px = _measure_vertical_column(
+            column=column,
+            font_size=font_size,
+            font_path=resolved_font_path,
+            letter_spacing_px=letter_spacing_px,
+            resvg_tu_override=resvg_tu_override,
+        )
+        measured_column_width = max(measured_column_width, column_width_px)
+        measured_block_height = max(measured_block_height, column_height_px)
+
+    fallback_column_width = max(26, int(round(em * 1.0)))
+    fallback_block_height = char_step * max(len(column) for column in columns)
+    column_width = max(20, measured_column_width or fallback_column_width)
     block_width = column_width * len(columns) + column_gap * max(0, len(columns) - 1)
-    block_height = char_step * max(len(column) for column in columns)
+    block_height = max(1, measured_block_height or fallback_block_height)
     return {
         "em": em,
         "char_step": char_step,
@@ -25,8 +182,18 @@ def compute_text_layout(
     canvas_height: int,
     plan: BubblePlan,
     font_size: int,
+    *,
+    font_path: str | None = None,
+    letter_spacing_px: float = DEFAULT_TEXT_LETTER_SPACING_PX,
+    resvg_tu_override: bool = True,
 ) -> dict[str, int]:
-    metrics = build_text_metrics(font_size, plan.columns)
+    metrics = build_text_metrics(
+        font_size,
+        plan.columns,
+        font_path=font_path,
+        letter_spacing_px=letter_spacing_px,
+        resvg_tu_override=resvg_tu_override,
+    )
     char_step = metrics["char_step"]
     column_width = metrics["column_width"]
     column_gap = metrics["column_gap"]

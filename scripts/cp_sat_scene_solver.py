@@ -41,8 +41,8 @@ from beam_search_scene_solver import (
 
 READING_MODEL = "rtl-columns"
 OBJECTIVE_SCALE = 100
-MAX_SOLVE_SECONDS = 10.0
-NUM_SEARCH_WORKERS = 8
+MAX_SOLVE_SECONDS = 12.0
+NUM_SEARCH_WORKERS = 1
 MAX_CANDIDATES_PER_BIN = 8
 MAX_CANDIDATES_PER_BUBBLE = 96
 COARSE_BIN_DIVISIONS = 3
@@ -56,7 +56,9 @@ CROWDING_WEIGHT = 8.0
 HORIZONTAL_SPAN_DEFICIT_WEIGHT = 4.0
 VERTICAL_SPAN_DEFICIT_WEIGHT = 1.4
 VERTICAL_CENTER_SPAN_DEFICIT_WEIGHT = 3.4
-MAX_CHEST_SHELL_OVERLAP_RATIO = 0.03
+CHEST_SHELL_OVERLAP_WEIGHT = 1400.0
+CHEST_NEAR_WEIGHT = 18.0
+MAX_CHEST_SHELL_OVERLAP_RATIO = 0.015
 LARGE_UPWARD_RESET_WEIGHT = 7.5
 MAX_LARGE_COLUMN_UPWARD_RESET_RATIO = 0.18
 TEXT_PERSON_OVERLAP_MULTIPLIER = 1.35
@@ -128,6 +130,14 @@ def _coarse_bin_key(*, center_x: float, center_y: float, image_width: int, image
     cell_x = min(COARSE_BIN_DIVISIONS - 1, max(0, int(center_x * COARSE_BIN_DIVISIONS / max(1, image_width))))
     cell_y = min(COARSE_BIN_DIVISIONS - 1, max(0, int(center_y * COARSE_BIN_DIVISIONS / max(1, image_height))))
     return cell_x, cell_y
+
+
+def _candidate_limits(total_bubbles: int) -> tuple[int, int]:
+    if total_bubbles >= 5:
+        return 6, 72
+    if total_bubbles >= 4:
+        return 6, 72
+    return MAX_CANDIDATES_PER_BIN, MAX_CANDIDATES_PER_BUBBLE
 
 
 def _edge_seed_positions(*, dimensions: BubbleDimensions, image_width: int, image_height: int, body_regions: BodyRegions) -> list[tuple[int, int, str]]:
@@ -279,6 +289,17 @@ def _build_choice(
     if invalid_reasons:
         return None, invalid_reasons
 
+    chest_gap = rect_distance(bubble_box, body_regions.chest_bbox)
+    min_chest_gap = max(
+        12,
+        int(round(body_regions.chest_bbox.height * 0.10)),
+        int(round(max(dimensions.text_width, dimensions.text_height) * 0.05)),
+    )
+    if chest_shell_overlap > 0:
+        penalties["bubble_shell_chest_overlap"] = chest_shell_overlap * CHEST_SHELL_OVERLAP_WEIGHT
+    if chest_gap < min_chest_gap:
+        penalties["bubble_shell_chest_near"] = (min_chest_gap - chest_gap) * CHEST_NEAR_WEIGHT
+
     critical_shell_overlap = face_shell_overlap + chest_shell_overlap + lower_shell_overlap
     if critical_shell_overlap > 0:
         penalties["bubble_shell_critical_overlap"] = critical_shell_overlap * BUBBLE_SHELL_CRITICAL_WEIGHT
@@ -327,10 +348,12 @@ def _collect_candidates(
     image_height: int,
     body_regions: BodyRegions,
     head_mask: np.ndarray | None,
+    total_bubbles: int,
 ) -> tuple[list[CandidateOption], dict[str, int], list[dict[str, Any]], dict[str, int]]:
     invalid_counts: dict[str, int] = {}
     candidate_rows: list[tuple[Candidate, PlacementChoice]] = []
     seen: set[tuple[int, int]] = set()
+    max_candidates_per_bin, max_candidates_per_bubble = _candidate_limits(total_bubbles)
 
     def add_candidate(text_left: int, text_top: int, source: str) -> None:
         candidate = Candidate(int(round(text_left)), int(round(text_top)), source)
@@ -405,18 +428,42 @@ def _collect_candidates(
     retained_rows: list[tuple[Candidate, PlacementChoice]] = []
     retained_keys: set[tuple[int, int]] = set()
     bin_counts: dict[str, int] = {}
+
+    # Keep a few geometric extremes so the global solver can still build wide/tall spreads
+    # even after aggressive candidate pruning for 4-5 bubble cases.
+    priority_rows: list[tuple[Candidate, PlacementChoice]] = []
+    for selector in (
+        lambda row: (row[1].total_score, row[1].text_box.left, row[1].text_box.top),
+        lambda row: (row[1].total_score, -row[1].text_box.right, row[1].text_box.top),
+        lambda row: (row[1].total_score, row[1].text_box.top, -row[1].text_box.right),
+        lambda row: (row[1].total_score, -row[1].text_box.bottom, -row[1].text_box.right),
+    ):
+        priority_rows.extend(sorted(candidate_rows, key=selector)[:2])
+    for candidate, choice in priority_rows:
+        if len(retained_rows) >= max_candidates_per_bubble:
+            break
+        key = candidate_key(candidate)
+        if key in retained_keys:
+            continue
+        retained_keys.add(key)
+        retained_rows.append((candidate, choice))
+
     for bin_key in sorted(binned):
-        keep_rows = binned[bin_key][:MAX_CANDIDATES_PER_BIN]
+        keep_rows = binned[bin_key][:max_candidates_per_bin]
         bin_counts[f"{bin_key[0]}-{bin_key[1]}"] = len(keep_rows)
         for candidate, choice in keep_rows:
+            if len(retained_rows) >= max_candidates_per_bubble:
+                break
             key = candidate_key(candidate)
             if key in retained_keys:
                 continue
             retained_keys.add(key)
             retained_rows.append((candidate, choice))
+        if len(retained_rows) >= max_candidates_per_bubble:
+            break
 
     for candidate, choice in candidate_rows:
-        if len(retained_rows) >= MAX_CANDIDATES_PER_BUBBLE:
+        if len(retained_rows) >= max_candidates_per_bubble:
             break
         key = candidate_key(candidate)
         if key in retained_keys:
@@ -505,6 +552,308 @@ def _choice_from_option(option: CandidateOption, *, bubble_id: str, sentence_ids
     )
 
 
+def _manual_choice_from_anchor(
+    *,
+    scene_plan: SceneBubblePlan,
+    dimensions: BubbleDimensions,
+    image_width: int,
+    image_height: int,
+    body_regions: BodyRegions,
+    head_mask: np.ndarray | None,
+    source: str,
+) -> tuple[PlacementChoice, list[str]]:
+    anchor_x_px = int(round(scene_plan.anchor_x * image_width))
+    anchor_y_px = int(round(scene_plan.anchor_y * image_height))
+    text_left = anchor_x_px - dimensions.text_width
+    text_top = anchor_y_px
+    choice, invalid_reasons = _build_choice(
+        dimensions=dimensions,
+        text_left=text_left,
+        text_top=text_top,
+        image_width=image_width,
+        image_height=image_height,
+        body_regions=body_regions,
+        head_mask=head_mask,
+    )
+    if choice is not None:
+        choice.source = source
+        return choice, []
+
+    text_box, bubble_box, _, _ = make_layout_boxes_from_text_position(dimensions, text_left, text_top)
+    region = _derive_region(
+        text_box=text_box,
+        image_width=image_width,
+        image_height=image_height,
+        body_regions=body_regions,
+    )
+    return (
+        PlacementChoice(
+            bubble_id=scene_plan.bubble_id,
+            sentence_ids=list(scene_plan.sentence_ids),
+            anchor_x_px=anchor_x_px,
+            anchor_y_px=anchor_y_px,
+            text_box=text_box,
+            bubble_box=bubble_box,
+            total_score=0.0,
+            penalties={},
+            source=source,
+            template=READING_MODEL,
+            slot=region,
+        ),
+        invalid_reasons,
+    )
+
+
+def evaluate_scene_layout(
+    *,
+    reflow_plans: list[ReflowBubblePlan],
+    scene_plans: list[SceneBubblePlan],
+    image_width: int,
+    image_height: int,
+    face_mask: np.ndarray,
+    person_mask: np.ndarray,
+    chest_mask: np.ndarray | None = None,
+    lower_mask: np.ndarray | None = None,
+    head_mask: np.ndarray | None = None,
+    font_size: int,
+    source: str = "manual",
+) -> PlacementSolution:
+    if not reflow_plans:
+        raise RuntimeError("reflow plans are required")
+    if len(reflow_plans) > 5:
+        raise RuntimeError("PoC supports at most 5 bubbles")
+
+    scene_by_bubble_id = {plan.bubble_id: plan for plan in scene_plans}
+    missing_bubbles = [plan.bubble_id for plan in reflow_plans if plan.bubble_id not in scene_by_bubble_id]
+    if missing_bubbles:
+        raise RuntimeError(f"scene plans missing bubbles: {', '.join(missing_bubbles)}")
+    extra_bubbles = [plan.bubble_id for plan in scene_plans if plan.bubble_id not in {item.bubble_id for item in reflow_plans}]
+    if extra_bubbles:
+        raise RuntimeError(f"scene plans contain unknown bubbles: {', '.join(extra_bubbles)}")
+
+    body_regions = build_body_regions(person_mask, face_mask, chest_mask=chest_mask, lower_mask=lower_mask)
+    dimensions_by_bubble_id: dict[str, BubbleDimensions] = {}
+    selected_placements: list[PlacementChoice] = []
+    invalid_placements: list[dict[str, Any]] = []
+
+    for reflow_plan in reflow_plans:
+        dimensions = estimate_bubble_dimensions(
+            reflow_plan,
+            image_width=image_width,
+            image_height=image_height,
+            font_size=font_size,
+        )
+        scene_plan = scene_by_bubble_id[reflow_plan.bubble_id]
+        choice, invalid_reasons = _manual_choice_from_anchor(
+            scene_plan=scene_plan,
+            dimensions=dimensions,
+            image_width=image_width,
+            image_height=image_height,
+            body_regions=body_regions,
+            head_mask=head_mask,
+            source=source,
+        )
+        choice.bubble_id = reflow_plan.bubble_id
+        choice.sentence_ids = list(reflow_plan.sentence_ids)
+        dimensions_by_bubble_id[reflow_plan.bubble_id] = dimensions
+        selected_placements.append(choice)
+        if invalid_reasons:
+            invalid_placements.append(
+                {
+                    "bubble_id": reflow_plan.bubble_id,
+                    "reasons": invalid_reasons,
+                    "placement": choice.to_debug_dict(),
+                }
+            )
+
+    hard_conflicts: list[dict[str, Any]] = []
+    expanded_boxes = [expand_rect(placement.text_box, TEXT_CLEARANCE_PX) for placement in selected_placements]
+    for left_index, left in enumerate(selected_placements):
+        for right_index in range(left_index + 1, len(selected_placements)):
+            right = selected_placements[right_index]
+            if rects_intersect(expanded_boxes[left_index], expanded_boxes[right_index]):
+                hard_conflicts.append(
+                    {
+                        "type": "text_overlap",
+                        "left_bubble_id": left.bubble_id,
+                        "right_bubble_id": right.bubble_id,
+                    }
+                )
+
+    pairwise_debug: list[dict[str, Any]] = []
+    pairwise_total = 0.0
+    for bubble_index in range(1, len(selected_placements)):
+        prev_choice = selected_placements[bubble_index - 1]
+        curr_choice = selected_placements[bubble_index]
+        center_tol_x = max(prev_choice.text_box.width, curr_choice.text_box.width)
+        if curr_choice.text_box.center_x > prev_choice.text_box.center_x + center_tol_x:
+            hard_conflicts.append(
+                {
+                    "type": "reading_x_backtrack_hard",
+                    "previous_bubble_id": prev_choice.bubble_id,
+                    "current_bubble_id": curr_choice.bubble_id,
+                }
+            )
+
+        same_column_tol = _column_tolerance(prev_choice, curr_choice)
+        if (
+            abs(curr_choice.text_box.center_x - prev_choice.text_box.center_x) <= same_column_tol
+            and curr_choice.text_box.top < prev_choice.text_box.top
+        ):
+            hard_conflicts.append(
+                {
+                    "type": "same_column_upward_reset_hard",
+                    "previous_bubble_id": prev_choice.bubble_id,
+                    "current_bubble_id": curr_choice.bubble_id,
+                }
+            )
+
+        same_side_upward_limit = max(
+            16,
+            int(
+                round(
+                    max(prev_choice.text_box.height, curr_choice.text_box.height) * MAX_SAME_SIDE_UPWARD_RESET_RATIO
+                )
+            ),
+        )
+        if (
+            _slot_side(prev_choice.slot) == _slot_side(curr_choice.slot)
+            and curr_choice.text_box.top + same_side_upward_limit < prev_choice.text_box.top
+        ):
+            hard_conflicts.append(
+                {
+                    "type": "same_side_upward_reset_hard",
+                    "previous_bubble_id": prev_choice.bubble_id,
+                    "current_bubble_id": curr_choice.bubble_id,
+                }
+            )
+
+        large_column_shift = abs(curr_choice.text_box.center_x - prev_choice.text_box.center_x) > max(
+            same_column_tol * 2.0,
+            image_width * 0.18,
+        )
+        upward_reset_limit = max(
+            24,
+            int(
+                round(
+                    max(prev_choice.text_box.height, curr_choice.text_box.height)
+                    * MAX_LARGE_COLUMN_UPWARD_RESET_RATIO
+                )
+            ),
+        )
+        if large_column_shift and curr_choice.text_box.top + upward_reset_limit < prev_choice.text_box.top:
+            hard_conflicts.append(
+                {
+                    "type": "large_column_shift_upward_reset_hard",
+                    "previous_bubble_id": prev_choice.bubble_id,
+                    "current_bubble_id": curr_choice.bubble_id,
+                }
+            )
+
+        penalties = _pairwise_penalties(prev_choice, curr_choice)
+        pairwise_total += sum(penalties.values())
+        pairwise_debug.append(
+            {
+                "previous_bubble_id": prev_choice.bubble_id,
+                "current_bubble_id": curr_choice.bubble_id,
+                "penalties": {key: round(value, 3) for key, value in penalties.items()},
+            }
+        )
+
+    global_penalties: dict[str, float] = {}
+    if len(selected_placements) >= 2:
+        horizontal_span = max(placement.text_box.right for placement in selected_placements) - min(
+            placement.text_box.left for placement in selected_placements
+        )
+        vertical_span = max(placement.text_box.bottom for placement in selected_placements) - min(
+            placement.text_box.top for placement in selected_placements
+        )
+        vertical_center_span = int(round(max(placement.text_box.center_y for placement in selected_placements))) - int(
+            round(min(placement.text_box.center_y for placement in selected_placements))
+        )
+
+        target_horizontal_span = min(
+            image_width,
+            max(
+                int(round(body_regions.person_bbox.width * 0.78)),
+                int(round(image_width * 0.52)),
+            ),
+        )
+        target_vertical_span = min(
+            image_height,
+            max(
+                int(round(body_regions.person_bbox.height * 0.40)),
+                int(round(image_height * 0.28)),
+            ),
+        )
+        target_vertical_center_span = min(
+            image_height,
+            max(
+                int(round(body_regions.person_bbox.height * 0.26)),
+                int(round(image_height * 0.18)),
+            ),
+        )
+        horizontal_span_deficit = max(0, target_horizontal_span - horizontal_span)
+        vertical_span_deficit = max(0, target_vertical_span - vertical_span)
+        vertical_center_span_deficit = max(0, target_vertical_center_span - vertical_center_span)
+        if horizontal_span_deficit > 0:
+            global_penalties["horizontal_span_deficit"] = horizontal_span_deficit * HORIZONTAL_SPAN_DEFICIT_WEIGHT
+        if vertical_span_deficit > 0:
+            global_penalties["vertical_span_deficit"] = vertical_span_deficit * VERTICAL_SPAN_DEFICIT_WEIGHT
+        if vertical_center_span_deficit > 0:
+            global_penalties["vertical_center_span_deficit"] = (
+                vertical_center_span_deficit * VERTICAL_CENTER_SPAN_DEFICIT_WEIGHT
+            )
+
+    scene_plans_ordered = [scene_by_bubble_id[plan.bubble_id] for plan in reflow_plans]
+    centers = [(placement.text_box.center_x, placement.text_box.center_y) for placement in selected_placements]
+    pair_center_distances = [
+        round(
+            math.hypot(
+                left.text_box.center_x - right.text_box.center_x,
+                left.text_box.center_y - right.text_box.center_y,
+            ),
+            3,
+        )
+        for left_index, left in enumerate(selected_placements)
+        for right in selected_placements[left_index + 1 :]
+    ]
+    unary_total = sum(placement.total_score for placement in selected_placements)
+    objective_value = unary_total + pairwise_total + sum(global_penalties.values())
+    debug_payload = {
+        "solver": "manual-eval",
+        "selected_template": READING_MODEL,
+        "reading_model": READING_MODEL,
+        "image_width": image_width,
+        "image_height": image_height,
+        "font_size": font_size,
+        "body_regions": body_regions.to_debug_dict(),
+        "dimensions": [item.to_debug_dict() for item in dimensions_by_bubble_id.values()],
+        "placements": [placement.to_debug_dict() for placement in selected_placements],
+        "center_points": [[round(x, 3), round(y, 3)] for x, y in centers],
+        "pair_center_distances": pair_center_distances,
+        "pairwise_penalties": pairwise_debug,
+        "hard_conflicts": hard_conflicts,
+        "invalid_placements": invalid_placements,
+        "global_penalties": {key: round(value, 3) for key, value in global_penalties.items()},
+        "unary_total": round(unary_total, 3),
+        "pairwise_total": round(pairwise_total, 3),
+        "objective_value": round(objective_value, 3),
+        "feasible": not invalid_placements and not hard_conflicts,
+        "horizontal_span_px": max(placement.text_box.right for placement in selected_placements)
+        - min(placement.text_box.left for placement in selected_placements),
+        "vertical_span_px": max(placement.text_box.bottom for placement in selected_placements)
+        - min(placement.text_box.top for placement in selected_placements),
+        "min_pair_distance_px": min(pair_center_distances) if pair_center_distances else None,
+    }
+    return PlacementSolution(
+        selected_template=READING_MODEL,
+        scene_plans=scene_plans_ordered,
+        placements=selected_placements,
+        debug_payload=debug_payload,
+    )
+
+
 def solve_scene_layout(
     *,
     reflow_plans: list[ReflowBubblePlan],
@@ -540,6 +889,7 @@ def solve_scene_layout(
             image_height=image_height,
             body_regions=body_regions,
             head_mask=head_mask,
+            total_bubbles=len(reflow_plans),
         )
         dimensions_by_bubble_id[reflow_plan.bubble_id] = dimensions
         candidate_debug.append(

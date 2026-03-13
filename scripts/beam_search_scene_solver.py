@@ -1372,6 +1372,7 @@ def render_debug_overlay(
     person_mask: np.ndarray,
     face_mask: np.ndarray,
     body_regions: BodyRegions,
+    head_mask: np.ndarray | None = None,
 ) -> None:
     base = Image.open(image_path).convert("RGBA")
     overlay = base.copy()
@@ -1388,6 +1389,8 @@ def render_debug_overlay(
     apply_mask(face_mask, (255, 70, 70), 90)
     apply_mask(body_regions.chest_mask, (255, 215, 0), 90)
     apply_mask(body_regions.lower_mask, (190, 40, 220), 90)
+    if head_mask is not None:
+        apply_mask(head_mask, (40, 210, 110), 86)
     overlay = Image.fromarray(rgba, mode="RGBA")
 
     draw = ImageDraw.Draw(overlay)
@@ -1395,6 +1398,8 @@ def render_debug_overlay(
     draw.rectangle(body_regions.face_bbox.as_tuple(), outline=(255, 70, 70, 240), width=3)
     draw.rectangle(body_regions.chest_bbox.as_tuple(), outline=(255, 215, 0, 240), width=3)
     draw.rectangle(body_regions.lower_bbox.as_tuple(), outline=(190, 40, 220, 240), width=3)
+    if head_mask is not None and np.any(head_mask):
+        draw.rectangle(bbox_from_mask(head_mask).as_tuple(), outline=(40, 210, 110, 240), width=3)
 
     if solution is not None:
         for index, placement in enumerate(solution.placements, start=1):
@@ -1423,6 +1428,22 @@ def render_debug_overlay(
             draw.text(
                 (placement.bubble_box.left + 8, max(0, placement.bubble_box.top - 18)),
                 label,
+                fill=(20, 20, 20, 255),
+            )
+            draw.ellipse(
+                (
+                    placement.anchor_x_px - 4,
+                    placement.anchor_y_px - 4,
+                    placement.anchor_x_px + 4,
+                    placement.anchor_y_px + 4,
+                ),
+                fill=(20, 220, 90, 255),
+                outline=(20, 20, 20, 255),
+                width=1,
+            )
+            draw.text(
+                (placement.text_box.left, min(overlay.height - 18, placement.text_box.bottom + 4)),
+                f"a=({placement.anchor_x_px},{placement.anchor_y_px})",
                 fill=(20, 20, 20, 255),
             )
 

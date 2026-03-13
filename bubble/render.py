@@ -34,6 +34,18 @@ TEXT_STAGE_GUIDE_RADIUS = 12
 TEXT_STAGE_GUIDE_OUTLINE_WIDTH = 2
 
 
+def _parse_letter_spacing_px(value: str | None, default: float = -1.0) -> float:
+    raw = (value or "").strip()
+    if not raw:
+        return default
+    if raw.endswith("px"):
+        raw = raw[:-2].strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 @dataclass
 class RenderedBubble:
     plan: BubblePlan
@@ -477,7 +489,15 @@ def render_bubbles(
     def _render_with_browser(browser: Any | None) -> None:
         rendered_bubbles: list[RenderedBubble] = []
         for plan in plans:
-            text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
+            text_layout = compute_text_layout(
+                width_px,
+                height_px,
+                plan,
+                actual_font_size,
+                font_path=font_path,
+                letter_spacing_px=_parse_letter_spacing_px(text_letter_spacing),
+                resvg_tu_override=resvg_tu_override,
+            )
             text_overlay = render_text_overlay(
                 renderer=text_renderer,
                 browser=browser,
@@ -595,7 +615,15 @@ def render_text_stage_preview(
     def _render_with_browser(browser: Any | None) -> None:
         draw = ImageDraw.Draw(base, "RGBA")
         for plan in plans:
-            text_layout = compute_text_layout(width_px, height_px, plan, actual_font_size)
+            text_layout = compute_text_layout(
+                width_px,
+                height_px,
+                plan,
+                actual_font_size,
+                font_path=font_path,
+                letter_spacing_px=_parse_letter_spacing_px(text_letter_spacing),
+                resvg_tu_override=resvg_tu_override,
+            )
             text_overlay = render_text_overlay(
                 renderer=text_renderer,
                 browser=browser,
