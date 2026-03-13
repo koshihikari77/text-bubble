@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,8 +42,8 @@ from beam_search_scene_solver import (
 
 READING_MODEL = "rtl-columns"
 OBJECTIVE_SCALE = 100
-MAX_SOLVE_SECONDS = 12.0
-NUM_SEARCH_WORKERS = 1
+MAX_SOLVE_SECONDS = float(os.environ.get("TEXT_BUBBLE_CP_SAT_MAX_SECONDS", "20.0"))
+NUM_SEARCH_WORKERS = max(1, int(os.environ.get("TEXT_BUBBLE_CP_SAT_WORKERS", "1")))
 MAX_CANDIDATES_PER_BIN = 8
 MAX_CANDIDATES_PER_BUBBLE = 96
 COARSE_BIN_DIVISIONS = 3
@@ -68,8 +69,6 @@ HEAD_TEXT_OVERLAP_WEIGHT = 1400.0
 MAX_HEAD_TEXT_OVERLAP_RATIO = 0.30
 MAX_HEAD_SHELL_OVERLAP_RATIO = 0.50
 MAX_SAME_SIDE_UPWARD_RESET_RATIO = 0.14
-
-
 @dataclass(frozen=True)
 class CandidateOption:
     index: int
@@ -401,7 +400,8 @@ def _collect_candidates(
         )
     )
 
-    for candidate, choice in list(candidate_rows[: min(8, len(candidate_rows))]):
+    refinement_seed_count = 8
+    for candidate, choice in list(candidate_rows[: min(refinement_seed_count, len(candidate_rows))]):
         for dx, dy in _local_refinement_offsets(dimensions=dimensions):
             add_candidate(candidate.text_left + dx, candidate.text_top + dy, "local-refine")
 

@@ -53,6 +53,11 @@ class RunPipelineResult:
     reflow_workers: int
 
 
+def _solver_module_classes() -> tuple[Any, Any, Any]:
+    solver_module = _import_cp_sat_scene_solver()
+    return solver_module, solver_module.Rect, solver_module.PlacementChoice
+
+
 def _dialogue_text(dialogue_lines: list[str]) -> str:
     return "\n".join(dialogue_lines)
 
@@ -141,6 +146,24 @@ def materialize_scene_bundle(
     )
 
 
+def bundle_from_evaluated_solution(
+    *,
+    dialogue_lines: list[str],
+    reflow_plans: list[ReflowBubblePlan],
+    evaluated_solution: Any,
+    source: str,
+) -> ScenePlacementBundle:
+    composed_plans = compose_bubble_plans(dialogue_lines, evaluated_solution.scene_plans, reflow_plans)
+    debug_payload = dict(evaluated_solution.debug_payload)
+    debug_payload["placement_source"] = source
+    return ScenePlacementBundle(
+        scene_plans=evaluated_solution.scene_plans,
+        composed_plans=composed_plans,
+        evaluated_solution=evaluated_solution,
+        debug_payload=debug_payload,
+    )
+
+
 def compose_scene_bundle(
     *,
     dialogue_lines: list[str],
@@ -153,6 +176,73 @@ def compose_scene_bundle(
         composed_plans=compose_bubble_plans(dialogue_lines, scene_plans, reflow_plans),
         evaluated_solution=None,
         debug_payload={"placement_source": source},
+    )
+
+
+def serialize_evaluated_solution(evaluated_solution: Any) -> dict[str, Any]:
+    return {
+        "selected_template": evaluated_solution.selected_template,
+        "scene_plans": [
+            {
+                "bubble_id": plan.bubble_id,
+                "anchor_x": plan.anchor_x,
+                "anchor_y": plan.anchor_y,
+                "sentence_ids": list(plan.sentence_ids),
+            }
+            for plan in evaluated_solution.scene_plans
+        ],
+        "placements": [
+            {
+                "bubble_id": placement.bubble_id,
+                "sentence_ids": list(placement.sentence_ids),
+                "anchor_x_px": placement.anchor_x_px,
+                "anchor_y_px": placement.anchor_y_px,
+                "text_box": placement.text_box.as_dict(),
+                "bubble_box": placement.bubble_box.as_dict(),
+                "total_score": placement.total_score,
+                "penalties": dict(placement.penalties),
+                "source": placement.source,
+                "template": placement.template,
+                "slot": placement.slot,
+            }
+            for placement in evaluated_solution.placements
+        ],
+        "debug_payload": dict(evaluated_solution.debug_payload),
+    }
+
+
+def deserialize_evaluated_solution(payload: dict[str, Any]) -> Any:
+    solver_module, rect_cls, placement_choice_cls = _solver_module_classes()
+    scene_plans = [
+        SceneBubblePlan(
+            bubble_id=str(plan["bubble_id"]),
+            anchor_x=float(plan["anchor_x"]),
+            anchor_y=float(plan["anchor_y"]),
+            sentence_ids=[int(item) for item in plan["sentence_ids"]],
+        )
+        for plan in payload["scene_plans"]
+    ]
+    placements = [
+        placement_choice_cls(
+            bubble_id=str(placement["bubble_id"]),
+            sentence_ids=[int(item) for item in placement["sentence_ids"]],
+            anchor_x_px=int(placement["anchor_x_px"]),
+            anchor_y_px=int(placement["anchor_y_px"]),
+            text_box=rect_cls(**placement["text_box"]),
+            bubble_box=rect_cls(**placement["bubble_box"]),
+            total_score=float(placement["total_score"]),
+            penalties={str(key): float(value) for key, value in dict(placement["penalties"]).items()},
+            source=str(placement["source"]),
+            template=str(placement["template"]),
+            slot=str(placement["slot"]),
+        )
+        for placement in payload["placements"]
+    ]
+    return solver_module.PlacementSolution(
+        selected_template=str(payload["selected_template"]),
+        scene_plans=scene_plans,
+        placements=placements,
+        debug_payload=dict(payload["debug_payload"]),
     )
 
 

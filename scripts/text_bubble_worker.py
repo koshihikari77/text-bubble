@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import socketserver
@@ -15,7 +16,6 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from bubble.assets import pick_font_path, resolve_bubble_asset  # noqa: E402
 from bubble.models import (  # noqa: E402
     assignment_plans_payload,
     plans_payload,
@@ -26,16 +26,18 @@ from bubble.models import (  # noqa: E402
     save_scene_plan_json,
     scene_plans_payload,
 )
-from bubble.scene_runtime import (  # noqa: E402
-    LLMRoute,
-    RenderConfig,
-    compose_scene_bundle,
-    infer_scene_stage,
-    render_scene_bundle,
-    resolve_scene_route,
-    run_pipeline,
-)
-from bubble.validation import load_reflow_plan_json, load_scene_plan_json  # noqa: E402
+
+
+def _assets_module():
+    return importlib.import_module("bubble.assets")
+
+
+def _scene_runtime():
+    return importlib.import_module("bubble.scene_runtime")
+
+
+def _validation_module():
+    return importlib.import_module("bubble.validation")
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,12 +57,13 @@ def _load_mask(path: str | None):
     return load_binary_mask(Path(path))
 
 
-def _render_config_from_payload(payload: dict[str, Any]) -> RenderConfig:
-    bubble_asset = resolve_bubble_asset(payload.get("bubble_asset"))
+def _render_config_from_payload(payload: dict[str, Any]) -> Any:
+    assets = _assets_module()
+    bubble_asset = assets.resolve_bubble_asset(payload.get("bubble_asset"))
     if bubble_asset is None:
         raise RuntimeError(f"bubble asset not found: {payload.get('bubble_asset')}")
-    return RenderConfig(
-        font_path=pick_font_path(payload.get("font")),
+    return _scene_runtime().RenderConfig(
+        font_path=assets.pick_font_path(payload.get("font")),
         font_family=payload.get("font_family"),
         bubble_asset=bubble_asset,
         font_size=int(payload.get("font_size", 0)),
@@ -72,8 +75,8 @@ def _render_config_from_payload(payload: dict[str, Any]) -> RenderConfig:
     )
 
 
-def _scene_route_from_payload(payload: dict[str, Any]) -> LLMRoute:
-    return resolve_scene_route(
+def _scene_route_from_payload(payload: dict[str, Any]) -> Any:
+    return _scene_runtime().resolve_scene_route(
         default_server=str(payload["server"]),
         default_model=str(payload["model"]),
         scene_server=payload.get("scene_server"),
@@ -86,7 +89,7 @@ def _scene_command(payload: dict[str, Any]) -> dict[str, Any]:
     image_path = Path(payload["image_path"])
     output_scene_path = Path(payload["output_scene_path"])
     route = _scene_route_from_payload(payload)
-    _, scene_plans = infer_scene_stage(
+    _, scene_plans = _scene_runtime().infer_scene_stage(
         image_path=image_path,
         dialogue_lines=dialogue_lines,
         route=route,
@@ -106,11 +109,11 @@ def _render_from_scene_command(payload: dict[str, Any]) -> dict[str, Any]:
     image_path = Path(payload["image_path"])
     output_path = Path(payload["output_path"])
     plan_output_path = Path(payload["plan_output_path"])
-    dialogue_lines, scene_plans = load_scene_plan_json(Path(payload["scene_path"]))
-    reflow_dialogue_lines, reflow_plans = load_reflow_plan_json(Path(payload["reflow_path"]))
+    dialogue_lines, scene_plans = _validation_module().load_scene_plan_json(Path(payload["scene_path"]))
+    reflow_dialogue_lines, reflow_plans = _validation_module().load_reflow_plan_json(Path(payload["reflow_path"]))
     if dialogue_lines != reflow_dialogue_lines:
         raise RuntimeError("scene JSON dialogue_lines do not match reflow JSON dialogue_lines")
-    bundle = compose_scene_bundle(
+    bundle = _scene_runtime().compose_scene_bundle(
         dialogue_lines=dialogue_lines,
         reflow_plans=reflow_plans,
         scene_plans=scene_plans,
@@ -118,7 +121,7 @@ def _render_from_scene_command(payload: dict[str, Any]) -> dict[str, Any]:
     )
     save_plan_json(plan_output_path, dialogue_lines, bundle.composed_plans)
     config = _render_config_from_payload(payload)
-    render_scene_bundle(
+    _scene_runtime().render_scene_bundle(
         image_path=image_path,
         output_path=output_path,
         bundle=bundle,
@@ -132,13 +135,47 @@ def _render_from_scene_command(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _solve_cp_sat_scene_command(payload: dict[str, Any]) -> dict[str, Any]:
+    scripts_dir = ROOT_DIR / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    import cp_sat_scene_solver
+
+    dialogue_lines, reflow_plans = _validation_module().load_reflow_plan_json(Path(payload["reflow_path"]))
+    image_path = Path(payload["image_path"])
+    image_width, image_height = Image.open(image_path).size
+    solution = cp_sat_scene_solver.solve_scene_layout(
+        reflow_plans=reflow_plans,
+        image_width=image_width,
+        image_height=image_height,
+        face_mask=_load_mask(payload.get("face_mask")),
+        person_mask=_load_mask(payload.get("person_mask")),
+        chest_mask=_load_mask(payload.get("chest_mask")),
+        lower_mask=_load_mask(payload.get("lower_mask")),
+        head_mask=_load_mask(payload.get("head_mask")),
+        font_size=int(payload["font_size"]),
+    )
+    bundle = _scene_runtime().bundle_from_evaluated_solution(
+        dialogue_lines=dialogue_lines,
+        reflow_plans=reflow_plans,
+        evaluated_solution=solution,
+        source="cp-sat",
+    )
+    return {
+        "status": "ok",
+        "dialogue_lines": dialogue_lines,
+        "scene": scene_plans_payload(dialogue_lines, bundle.scene_plans)["bubbles"],
+        "solution": _scene_runtime().serialize_evaluated_solution(solution),
+    }
+
+
 def _run_pipeline_command(payload: dict[str, Any]) -> dict[str, Any]:
     image_path = Path(payload["image_path"])
     image_width, image_height = Image.open(image_path).size
     dialogue_lines = [str(item) for item in payload["dialogue_lines"]]
-    default_route = LLMRoute(server=str(payload["server"]), model=str(payload["model"]))
+    default_route = _scene_runtime().LLMRoute(server=str(payload["server"]), model=str(payload["model"]))
     scene_route = _scene_route_from_payload(payload)
-    result = run_pipeline(
+    result = _scene_runtime().run_pipeline(
         image_path=image_path,
         dialogue_lines=dialogue_lines,
         default_route=default_route,
@@ -158,7 +195,7 @@ def _run_pipeline_command(payload: dict[str, Any]) -> dict[str, Any]:
     save_reflow_plan_json(Path(payload["reflow_path"]), dialogue_lines, result.reflow_plans)
     save_scene_plan_json(Path(payload["scene_path"]), dialogue_lines, result.scene_bundle.scene_plans)
     save_plan_json(Path(payload["plan_path"]), dialogue_lines, result.scene_bundle.composed_plans)
-    render_scene_bundle(
+    _scene_runtime().render_scene_bundle(
         image_path=image_path,
         output_path=Path(payload["output_path"]),
         bundle=result.scene_bundle,
@@ -191,6 +228,8 @@ def _dispatch(command: str, payload: dict[str, Any]) -> dict[str, Any]:
         return _scene_command(payload)
     if command == "render_from_scene":
         return _render_from_scene_command(payload)
+    if command == "solve_cp_sat_scene":
+        return _solve_cp_sat_scene_command(payload)
     if command == "run_pipeline":
         return _run_pipeline_command(payload)
     raise RuntimeError(f"unsupported worker command: {command}")

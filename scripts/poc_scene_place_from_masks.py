@@ -7,7 +7,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from PIL import Image
 
@@ -18,21 +18,10 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from bubble.assets import pick_font_path, resolve_bubble_asset  # noqa: E402
 from bubble.models import SceneBubblePlan, save_scene_plan_json  # noqa: E402
-from bubble.scene_runtime import RenderConfig, materialize_scene_bundle, render_scene_bundle  # noqa: E402
-from bubble.validation import load_reflow_plan_json  # noqa: E402
-from bubble.worker_client import worker_request  # noqa: E402
-from codex_scene_poc import (  # noqa: E402
-    DEFAULT_CODEX_CLI_COMMAND,
-    build_editable_scene_template,
-    build_prompt_context,
-    load_scene_edit_json,
-    run_codex_cli_scene_edit,
-    save_codex_board,
-    save_mask_composite,
-    summarize_debug_payload,
-)
+
+if TYPE_CHECKING:
+    from bubble.scene_runtime import RenderConfig
 
 
 SOLVER_MODULES = {
@@ -40,6 +29,7 @@ SOLVER_MODULES = {
     "cp-sat": "cp_sat_scene_solver",
 }
 PLANNER_MODES = ("solver", "cp-sat", "cp-sat-codex", "codex-first")
+DEFAULT_CODEX_CLI_COMMAND = "codex"
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,8 +88,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--use-worker", choices=("auto", "on", "off"), default="off", help="Worker mode")
     return parser.parse_args()
-
-
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -118,6 +106,67 @@ def _planner_solver_name(planner_mode: str, fallback_solver: str) -> str:
     if planner_mode in {"cp-sat", "cp-sat-codex"}:
         return "cp-sat"
     return fallback_solver
+
+
+def _codex_artifacts_enabled(planner_mode: str) -> bool:
+    return planner_mode in {"cp-sat-codex", "codex-first"}
+
+
+def _codex_scene_poc() -> Any:
+    return importlib.import_module("codex_scene_poc")
+
+
+def _scene_runtime() -> Any:
+    return importlib.import_module("bubble.scene_runtime")
+
+
+def _assets_module() -> Any:
+    return importlib.import_module("bubble.assets")
+
+
+def _validation_module() -> Any:
+    return importlib.import_module("bubble.validation")
+
+
+def _worker_request(*args: Any, **kwargs: Any) -> Any:
+    return importlib.import_module("bubble.worker_client").worker_request(*args, **kwargs)
+
+
+def _save_mask_composite(*args: Any, **kwargs: Any) -> Any:
+    return _codex_scene_poc().save_mask_composite(*args, **kwargs)
+
+
+def _load_scene_edit_json(*args: Any, **kwargs: Any) -> Any:
+    return _codex_scene_poc().load_scene_edit_json(*args, **kwargs)
+
+
+def _run_codex_cli_scene_edit(*args: Any, **kwargs: Any) -> Any:
+    return _codex_scene_poc().run_codex_cli_scene_edit(*args, **kwargs)
+
+
+def _summarize_debug_payload(*args: Any, **kwargs: Any) -> Any:
+    debug_payload = args[0] if args else kwargs["debug_payload"]
+    return {
+        "feasible": debug_payload.get("feasible"),
+        "objective_value": debug_payload.get("objective_value"),
+        "hard_conflict_count": len(debug_payload.get("hard_conflicts", [])),
+        "invalid_placement_count": len(debug_payload.get("invalid_placements", [])),
+        "horizontal_span_px": debug_payload.get("horizontal_span_px"),
+        "vertical_span_px": debug_payload.get("vertical_span_px"),
+        "min_pair_distance_px": debug_payload.get("min_pair_distance_px"),
+    }
+
+
+def _pick_font_path(font: str | None) -> str | None:
+    return _assets_module().pick_font_path(font)
+
+
+def _resolve_bubble_asset(path: str | None) -> Path | None:
+    return _assets_module().resolve_bubble_asset(path)
+
+
+def _load_reflow_plan_json(path: Path) -> tuple[list[str], list[Any]]:
+    return _validation_module().load_reflow_plan_json(path)
 
 
 def _load_masks(
@@ -184,7 +233,7 @@ def _prepare_iteration_artifacts(
     solver_module: Any,
     root_mask_composite_path: Path,
     render_output_path: Path,
-    render_config: RenderConfig | None,
+    render_config: "RenderConfig" | None,
     worker_mode: str,
     reflow_json_path_for_worker: Path,
     prompt_note: str,
@@ -213,7 +262,7 @@ def _prepare_iteration_artifacts(
             render_error = "bubble asset not found"
         else:
             try:
-                response = worker_request(
+                response = _worker_request(
                     "render_from_scene",
                     {
                         "image_path": str(image_path),
@@ -234,7 +283,7 @@ def _prepare_iteration_artifacts(
                     mode=worker_mode,
                 )
                 if response is None:
-                    render_scene_bundle(
+                    _scene_runtime().render_scene_bundle(
                         image_path=image_path,
                         output_path=paths["rendered"],
                         bundle=scene_bundle,
@@ -266,46 +315,48 @@ def _prepare_iteration_artifacts(
         if render_error is not None:
             debug_payload["render_error"] = render_error
 
-    template_payload = build_editable_scene_template(
-        planner_mode=planner_mode,
-        reflow_plans=reflow_plans,
-        scene_plans=scene_plans,
-        note=prompt_note,
-    )
-    write_json(paths["editable_scene_template"], template_payload)
+    if _codex_artifacts_enabled(planner_mode):
+        codex_scene_poc = _codex_scene_poc()
+        template_payload = codex_scene_poc.build_editable_scene_template(
+            planner_mode=planner_mode,
+            reflow_plans=reflow_plans,
+            scene_plans=scene_plans,
+            note=prompt_note,
+        )
+        write_json(paths["editable_scene_template"], template_payload)
 
-    save_codex_board(
-        paths["codex_board"],
-        original_image_path=image_path,
-        mask_composite_path=paths["mask_composite"],
-        rendered_path=paths["rendered"] if paths["rendered"].exists() else None,
-        debug_overlay_path=paths["debug_overlay"] if paths["debug_overlay"].exists() else None,
-        title=f"{planner_mode} {iteration_name}",
-        notes=[
-            prompt_note,
-            f"reflow: {reflow_json_path.name}",
-            "Edit anchor_x / anchor_y only in editable_scene_template.json",
-        ],
-    )
+        codex_scene_poc.save_codex_board(
+            paths["codex_board"],
+            original_image_path=image_path,
+            mask_composite_path=paths["mask_composite"],
+            rendered_path=paths["rendered"] if paths["rendered"].exists() else None,
+            debug_overlay_path=paths["debug_overlay"] if paths["debug_overlay"].exists() else None,
+            title=f"{planner_mode} {iteration_name}",
+            notes=[
+                prompt_note,
+                f"reflow: {reflow_json_path.name}",
+                "Edit anchor_x / anchor_y only in editable_scene_template.json",
+            ],
+        )
 
-    prompt_context = build_prompt_context(
-        planner_mode=planner_mode,
-        reflow_json_path=reflow_json_path,
-        image_path=image_path,
-        image_width=image_width,
-        image_height=image_height,
-        dialogue_lines=dialogue_lines,
-        reflow_plans=reflow_plans,
-        body_regions=body_regions,
-        current_scene_plans=scene_plans,
-        current_debug_payload=debug_payload if scene_bundle is not None else None,
-        previous_summary=previous_summary,
-        codex_board_path=paths["codex_board"],
-        mask_composite_path=paths["mask_composite"],
-        debug_overlay_path=paths["debug_overlay"] if paths["debug_overlay"].exists() else None,
-        rendered_path=paths["rendered"] if paths["rendered"].exists() else None,
-    )
-    write_json(paths["prompt_context"], prompt_context)
+        prompt_context = codex_scene_poc.build_prompt_context(
+            planner_mode=planner_mode,
+            reflow_json_path=reflow_json_path,
+            image_path=image_path,
+            image_width=image_width,
+            image_height=image_height,
+            dialogue_lines=dialogue_lines,
+            reflow_plans=reflow_plans,
+            body_regions=body_regions,
+            current_scene_plans=scene_plans,
+            current_debug_payload=debug_payload if scene_bundle is not None else None,
+            previous_summary=previous_summary,
+            codex_board_path=paths["codex_board"],
+            mask_composite_path=paths["mask_composite"],
+            debug_overlay_path=paths["debug_overlay"] if paths["debug_overlay"].exists() else None,
+            rendered_path=paths["rendered"] if paths["rendered"].exists() else None,
+        )
+        write_json(paths["prompt_context"], prompt_context)
     write_json(paths["debug_scores"], debug_payload)
     return {
         "name": iteration_name,
@@ -315,15 +366,15 @@ def _prepare_iteration_artifacts(
         "debug_scores": str(paths["debug_scores"]),
         "rendered": str(paths["rendered"]) if paths["rendered"].exists() else None,
         "mask_composite": str(paths["mask_composite"]),
-        "codex_board": str(paths["codex_board"]),
-        "prompt_context": str(paths["prompt_context"]),
-        "editable_scene_template": str(paths["editable_scene_template"]),
+        "codex_board": str(paths["codex_board"]) if paths["codex_board"].exists() else None,
+        "prompt_context": str(paths["prompt_context"]) if paths["prompt_context"].exists() else None,
+        "editable_scene_template": str(paths["editable_scene_template"]) if paths["editable_scene_template"].exists() else None,
         "status": debug_payload["status"],
-        "summary": summarize_debug_payload(debug_payload) if scene_bundle is not None else None,
+        "summary": _summarize_debug_payload(debug_payload) if scene_bundle is not None else None,
     }
 
 
-def _publish_iteration(iteration_dir: Path, out_dir: Path, render_output_path: Path) -> dict[str, Path]:
+def _publish_iteration(iteration_dir: Path, out_dir: Path, render_output_path: Path) -> dict[str, Path | None]:
     root_paths = _iteration_paths(out_dir)
     iteration_paths = _iteration_paths(iteration_dir)
     for key in ("debug_overlay", "debug_scores", "mask_composite", "codex_board", "prompt_context", "editable_scene_template"):
@@ -331,22 +382,22 @@ def _publish_iteration(iteration_dir: Path, out_dir: Path, render_output_path: P
     _copy_if_exists(iteration_paths["scene"], root_paths["scene"])
     _copy_if_exists(iteration_paths["rendered"], render_output_path)
     return {
-        "scene": root_paths["scene"],
-        "debug_overlay": root_paths["debug_overlay"],
-        "debug_scores": root_paths["debug_scores"],
-        "mask_composite": root_paths["mask_composite"],
-        "codex_board": root_paths["codex_board"],
-        "prompt_context": root_paths["prompt_context"],
-        "editable_scene_template": root_paths["editable_scene_template"],
-        "rendered": render_output_path,
+        "scene": root_paths["scene"] if root_paths["scene"].exists() else None,
+        "debug_overlay": root_paths["debug_overlay"] if root_paths["debug_overlay"].exists() else None,
+        "debug_scores": root_paths["debug_scores"] if root_paths["debug_scores"].exists() else None,
+        "mask_composite": root_paths["mask_composite"] if root_paths["mask_composite"].exists() else None,
+        "codex_board": root_paths["codex_board"] if root_paths["codex_board"].exists() else None,
+        "prompt_context": root_paths["prompt_context"] if root_paths["prompt_context"].exists() else None,
+        "editable_scene_template": root_paths["editable_scene_template"] if root_paths["editable_scene_template"].exists() else None,
+        "rendered": render_output_path if render_output_path.exists() else None,
     }
 
 
-def main() -> int:
-    args = parse_args()
+def run_args(args: argparse.Namespace, *, emit_paths: bool = True) -> dict[str, Any]:
     if args.codex_passes < 0:
         raise RuntimeError("--codex-passes must be >= 0")
 
+    result_payload: dict[str, Any]
     solver_name = _planner_solver_name(args.planner_mode, args.solver)
     solver_module = importlib.import_module(SOLVER_MODULES[solver_name])
 
@@ -366,7 +417,7 @@ def main() -> int:
     image = Image.open(image_path)
     image_width, image_height = image.size
     font_size = args.font_size or solver_module.default_font_size(image_height)
-    dialogue_lines, reflow_plans = load_reflow_plan_json(reflow_json_path)
+    dialogue_lines, reflow_plans = _load_reflow_plan_json(reflow_json_path)
 
     face_mask, person_mask, chest_mask, lower_mask, head_mask = _load_masks(
         solver_module=solver_module,
@@ -386,7 +437,7 @@ def main() -> int:
     )
 
     root_mask_composite_path = out_dir / "mask_composite.png"
-    save_mask_composite(
+    _save_mask_composite(
         root_mask_composite_path,
         image_width=image_width,
         image_height=image_height,
@@ -396,13 +447,13 @@ def main() -> int:
         head_mask=head_mask,
     )
 
-    resolved_font_path = pick_font_path(args.font)
-    resolved_bubble_asset = resolve_bubble_asset(args.bubble_asset)
+    resolved_font_path = _pick_font_path(args.font)
+    resolved_bubble_asset = _resolve_bubble_asset(args.bubble_asset)
     if resolved_bubble_asset is None and args.planner_mode != "codex-first":
         raise RuntimeError(f"bubble asset not found: {args.bubble_asset}")
     render_config = None
     if resolved_bubble_asset is not None:
-        render_config = RenderConfig(
+        render_config = _scene_runtime().RenderConfig(
             font_path=resolved_font_path,
             font_family=args.font_family,
             bubble_asset=resolved_bubble_asset,
@@ -421,8 +472,8 @@ def main() -> int:
     def _apply_edit(edit_path: Path, *, edit_index: int, prompt_note_default: str) -> Path:
         nonlocal previous_summary, final_iteration_dir
 
-        _, edited_scene_plans, edit_notes = load_scene_edit_json(edit_path, reflow_plans=reflow_plans)
-        edit_bundle = materialize_scene_bundle(
+        _, edited_scene_plans, edit_notes = _load_scene_edit_json(edit_path, reflow_plans=reflow_plans)
+        edit_bundle = _scene_runtime().materialize_scene_bundle(
             dialogue_lines=dialogue_lines,
             reflow_plans=reflow_plans,
             scene_plans=edited_scene_plans,
@@ -466,23 +517,42 @@ def main() -> int:
                 source_edit_json=str(edit_path),
             )
         )
-        previous_summary = summarize_debug_payload(edit_bundle.debug_payload)
+        previous_summary = _summarize_debug_payload(edit_bundle.debug_payload)
         final_iteration_dir = iteration_dir
         return iteration_dir
 
     if args.planner_mode in {"solver", "cp-sat", "cp-sat-codex"}:
         try:
-            initial_solution = solver_module.solve_scene_layout(
-                reflow_plans=reflow_plans,
-                image_width=image_width,
-                image_height=image_height,
-                face_mask=face_mask,
-                person_mask=person_mask,
-                chest_mask=chest_mask,
-                lower_mask=lower_mask,
-                head_mask=head_mask,
-                font_size=font_size,
-            )
+            initial_solution = None
+            if solver_name == "cp-sat":
+                response = _worker_request(
+                    "solve_cp_sat_scene",
+                    {
+                        "image_path": str(image_path),
+                        "reflow_path": str(reflow_json_path),
+                        "face_mask": str(face_mask_path),
+                        "person_mask": str(person_mask_path),
+                        "chest_mask": None if chest_mask_path is None else str(chest_mask_path),
+                        "lower_mask": None if lower_mask_path is None else str(lower_mask_path),
+                        "head_mask": None if head_mask_path is None else str(head_mask_path),
+                        "font_size": font_size,
+                    },
+                    mode=args.use_worker,
+                )
+                if response is not None:
+                    initial_solution = _scene_runtime().deserialize_evaluated_solution(dict(response["solution"]))
+            if initial_solution is None:
+                initial_solution = solver_module.solve_scene_layout(
+                    reflow_plans=reflow_plans,
+                    image_width=image_width,
+                    image_height=image_height,
+                    face_mask=face_mask,
+                    person_mask=person_mask,
+                    chest_mask=chest_mask,
+                    lower_mask=lower_mask,
+                    head_mask=head_mask,
+                    font_size=font_size,
+                )
         except Exception as exc:  # noqa: BLE001
             debug_payload: dict[str, Any]
             try:
@@ -519,31 +589,34 @@ def main() -> int:
                 head_mask=head_mask,
             )
             write_json(error_paths["debug_scores"], debug_payload)
-            save_codex_board(
-                error_paths["codex_board"],
-                original_image_path=image_path,
-                mask_composite_path=error_paths["mask_composite"],
-                rendered_path=None,
-                debug_overlay_path=error_paths["debug_overlay"],
-                title=f"{args.planner_mode} iter00 error",
-                notes=["Initial placement failed", "See debug_scores.json for details"],
-            )
+            if _codex_artifacts_enabled(args.planner_mode):
+                _codex_scene_poc().save_codex_board(
+                    error_paths["codex_board"],
+                    original_image_path=image_path,
+                    mask_composite_path=error_paths["mask_composite"],
+                    rendered_path=None,
+                    debug_overlay_path=error_paths["debug_overlay"],
+                    title=f"{args.planner_mode} iter00 error",
+                    notes=["Initial placement failed", "See debug_scores.json for details"],
+                )
             _publish_iteration(error_dir, out_dir, render_output_path)
-            print(str(error_paths["debug_scores"]), file=sys.stderr)
-            return 1
+            result_payload = {
+                "exit_code": 1,
+                "planner_mode": args.planner_mode,
+                "solver": solver_name,
+                "iterations_manifest": str(iterations_dir / "manifest.json"),
+                "final_artifacts": {
+                    "debug_scores": str(error_paths["debug_scores"]),
+                },
+            }
+            if emit_paths:
+                print(str(error_paths["debug_scores"]), file=sys.stderr)
+            return result_payload
 
-        initial_bundle = materialize_scene_bundle(
+        initial_bundle = _scene_runtime().bundle_from_evaluated_solution(
             dialogue_lines=dialogue_lines,
             reflow_plans=reflow_plans,
-            scene_plans=initial_solution.scene_plans,
-            image_width=image_width,
-            image_height=image_height,
-            face_mask=face_mask,
-            person_mask=person_mask,
-            chest_mask=chest_mask,
-            lower_mask=lower_mask,
-            head_mask=head_mask,
-            font_size=font_size,
+            evaluated_solution=initial_solution,
             source=solver_name,
         )
         initial_dir = iterations_dir / "iter00"
@@ -575,7 +648,7 @@ def main() -> int:
                 source_edit_json=None,
             )
         )
-        previous_summary = summarize_debug_payload(initial_bundle.debug_payload)
+        previous_summary = _summarize_debug_payload(initial_bundle.debug_payload)
         final_iteration_dir = initial_dir
 
     if args.planner_mode == "codex-first":
@@ -622,7 +695,7 @@ def main() -> int:
                 raise RuntimeError("no iteration available for Codex CLI planning")
             current_paths = _iteration_paths(final_iteration_dir)
             edit_path = out_dir / f"codex_edit_iter{next_edit_index:02d}.json"
-            run_codex_cli_scene_edit(
+            _run_codex_cli_scene_edit(
                 planner_mode=args.planner_mode,
                 command=args.codex_command,
                 model=args.codex_model,
@@ -660,16 +733,29 @@ def main() -> int:
         "reflow_json": str(reflow_json_path),
         "iterations": manifest_entries,
         "final_iteration": manifest_entries[-1]["name"],
-        "final_artifacts": {key: str(value) for key, value in published_paths.items()},
+        "final_artifacts": {key: (None if value is None else str(value)) for key, value in published_paths.items()},
     }
     write_json(iterations_dir / "manifest.json", manifest_payload)
 
+    result_payload = {
+        "exit_code": 0,
+        "planner_mode": args.planner_mode,
+        "solver": solver_name,
+        "iterations_manifest": str(iterations_dir / "manifest.json"),
+        "final_artifacts": {key: (None if value is None else str(value)) for key, value in published_paths.items()},
+    }
     for key in ("scene", "debug_overlay", "mask_composite", "codex_board", "prompt_context", "editable_scene_template", "debug_scores", "rendered"):
         path = published_paths.get(key)
-        if path is not None and Path(path).exists():
+        if emit_paths and path is not None and Path(path).exists():
             print(str(path))
-    print(str(iterations_dir / "manifest.json"))
-    return 0
+    if emit_paths:
+        print(str(iterations_dir / "manifest.json"))
+    return result_payload
+
+
+def main() -> int:
+    result = run_args(parse_args(), emit_paths=True)
+    return int(result["exit_code"])
 
 
 if __name__ == "__main__":

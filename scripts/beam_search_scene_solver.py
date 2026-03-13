@@ -1448,7 +1448,7 @@ def render_debug_overlay(
             )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    overlay.save(output_path)
+    overlay.save(output_path, compress_level=1, optimize=False)
 
 
 def solve_from_paths(

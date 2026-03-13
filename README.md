@@ -129,6 +129,8 @@ text-bubble -w out/run1 evaluate \
 `scripts/poc_scene_place_from_masks.py` を起点に、`reflow.json + image + body masks` から `scene.json -> rendered.png` を作る PoC を持っています。  
 PoC では `beam`, `cp-sat`, `cp-sat-codex`, `codex-first` を試せますが、2026-03-13 時点では `Codex` 系はまだ experimental で、品質は安定していません。  
 本線として見るべきなのは、幾何制約ベースの `cp-sat` と、その runtime/worker 整理です。
+`planner-mode=cp-sat` では Codex 用の `codex_board.png` / `editable_scene_template.json` / `prompt_context.json` は生成しません。
+`scripts/run_cp_sat_batch.py` は `--jobs N` で batch を並列化でき、`--jobs 1` では subprocess を使わず同一 Python プロセス内で PoC を直接実行します。
 
 ## 旧CLI
 

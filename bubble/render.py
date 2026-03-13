@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import io
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ TEXT_STAGE_GUIDE_PAD_X = 12
 TEXT_STAGE_GUIDE_PAD_Y = 14
 TEXT_STAGE_GUIDE_RADIUS = 12
 TEXT_STAGE_GUIDE_OUTLINE_WIDTH = 2
+LOCAL_TEXT_STAGE_PADDING_RATIO = 1.2
+_TEXT_OVERLAY_CACHE: dict[tuple[Any, ...], TextRenderResult] = {}
 
 
 def _parse_letter_spacing_px(value: str | None, default: float = -1.0) -> float:
@@ -52,6 +55,13 @@ class RenderedBubble:
     text_overlay: TextRenderResult
     bubble_layout: dict[str, int]
     bubble_image: Image.Image
+
+
+@dataclass
+class PreparedBubble:
+    plan: BubblePlan
+    text_overlay: TextRenderResult
+    bubble_layout: dict[str, int]
 
 
 def alpha_composite_clipped(base: Image.Image, overlay: Image.Image, left: int, top: int) -> None:
@@ -152,6 +162,81 @@ def alpha_bbox_or_fail(image: Image.Image) -> tuple[int, int, int, int]:
         raise RuntimeError("text renderer produced an empty alpha layer")
     left, top, right, bottom = bbox
     return int(left), int(top), int(right), int(bottom)
+
+
+def _translate_bbox(box: tuple[int, int, int, int], dx: int, dy: int) -> tuple[int, int, int, int]:
+    left, top, right, bottom = box
+    return left + dx, top + dy, right + dx, bottom + dy
+
+
+def _clone_text_render_result(result: TextRenderResult) -> TextRenderResult:
+    return TextRenderResult(
+        image=result.image.copy(),
+        alpha_bbox=result.alpha_bbox,
+        offset_left=result.offset_left,
+        offset_top=result.offset_top,
+    )
+
+
+def _text_overlay_cache_key(
+    *,
+    renderer: str,
+    canvas_width: int,
+    canvas_height: int,
+    plan: BubblePlan,
+    text_layout: dict[str, int],
+    font_path: str | None,
+    font_family: str | None,
+    text_letter_spacing: str,
+    text_word_spacing: str,
+    resvg_tu_override: bool,
+) -> tuple[Any, ...]:
+    return (
+        renderer,
+        canvas_width,
+        canvas_height,
+        tuple(plan.columns),
+        plan.speaker_id,
+        text_layout["font_size"],
+        text_layout["block_width"],
+        text_layout["block_height"],
+        text_layout["column_width"],
+        text_layout["column_gap"],
+        text_layout["char_step"],
+        text_layout["text_left"],
+        text_layout["text_top"],
+        font_path,
+        font_family,
+        text_letter_spacing,
+        text_word_spacing,
+        resvg_tu_override,
+    )
+
+
+def _local_text_stage(
+    *,
+    canvas_width: int,
+    canvas_height: int,
+    text_layout: dict[str, int],
+    font_size: int,
+) -> tuple[int, int, int, int, dict[str, int]]:
+    pad = max(
+        24,
+        int(round(text_layout["outline_width"] * 8)),
+        int(round(max(font_size, 24) * LOCAL_TEXT_STAGE_PADDING_RATIO)),
+    )
+    stage_left = max(0, text_layout["text_left"] - pad)
+    stage_top = max(0, text_layout["text_top"] - pad)
+    stage_right = min(canvas_width, text_layout["text_right"] + pad)
+    stage_bottom = min(canvas_height, text_layout["text_bottom"] + pad)
+    local_layout = dict(text_layout)
+    local_layout["anchor_x"] = text_layout["anchor_x"] - stage_left
+    local_layout["anchor_y"] = text_layout["anchor_y"] - stage_top
+    local_layout["text_left"] = text_layout["text_left"] - stage_left
+    local_layout["text_top"] = text_layout["text_top"] - stage_top
+    local_layout["text_right"] = text_layout["text_right"] - stage_left
+    local_layout["text_bottom"] = text_layout["text_bottom"] - stage_top
+    return stage_left, stage_top, stage_right, stage_bottom, local_layout
 
 
 def _ensure_browser_env() -> None:
@@ -456,6 +541,110 @@ def _render_merged_group_image(
     return image, left, top
 
 
+def _prepare_rendered_bubble(
+    *,
+    plan: BubblePlan,
+    width_px: int,
+    height_px: int,
+    actual_font_size: int,
+    browser: Any | None,
+    text_renderer: str,
+    font_path: str | None,
+    font_family: str | None,
+    resvg_executable: str | None,
+    text_letter_spacing: str,
+    text_word_spacing: str,
+    resvg_tu_override: bool,
+) -> PreparedBubble:
+    text_layout = compute_text_layout(
+        width_px,
+        height_px,
+        plan,
+        actual_font_size,
+        font_path=font_path,
+        letter_spacing_px=_parse_letter_spacing_px(text_letter_spacing),
+        resvg_tu_override=resvg_tu_override,
+    )
+    stage_left, stage_top, stage_right, stage_bottom, local_text_layout = _local_text_stage(
+        canvas_width=width_px,
+        canvas_height=height_px,
+        text_layout=text_layout,
+        font_size=actual_font_size,
+    )
+    local_canvas_width = stage_right - stage_left
+    local_canvas_height = stage_bottom - stage_top
+    cache_key = None
+    if browser is None:
+        cache_key = _text_overlay_cache_key(
+            renderer=text_renderer,
+            canvas_width=local_canvas_width,
+            canvas_height=local_canvas_height,
+            plan=plan,
+            text_layout=local_text_layout,
+            font_path=font_path,
+            font_family=font_family,
+            text_letter_spacing=text_letter_spacing,
+            text_word_spacing=text_word_spacing,
+            resvg_tu_override=resvg_tu_override,
+        )
+        cached_overlay = _TEXT_OVERLAY_CACHE.get(cache_key)
+        if cached_overlay is not None:
+            text_overlay = _clone_text_render_result(cached_overlay)
+        else:
+            text_overlay = render_text_overlay(
+                renderer=text_renderer,
+                browser=browser,
+                canvas_width=local_canvas_width,
+                canvas_height=local_canvas_height,
+                plan=plan,
+                text_layout=local_text_layout,
+                font_path=font_path,
+                font_family=font_family,
+                resvg_executable=resvg_executable,
+                text_letter_spacing=text_letter_spacing,
+                text_word_spacing=text_word_spacing,
+                resvg_tu_override=resvg_tu_override,
+            )
+            _TEXT_OVERLAY_CACHE[cache_key] = _clone_text_render_result(text_overlay)
+    else:
+        text_overlay = render_text_overlay(
+            renderer=text_renderer,
+            browser=browser,
+            canvas_width=local_canvas_width,
+            canvas_height=local_canvas_height,
+            plan=plan,
+            text_layout=local_text_layout,
+            font_path=font_path,
+            font_family=font_family,
+            resvg_executable=resvg_executable,
+            text_letter_spacing=text_letter_spacing,
+            text_word_spacing=text_word_spacing,
+            resvg_tu_override=resvg_tu_override,
+        )
+    global_text_bbox = _translate_bbox(text_overlay.alpha_bbox, stage_left, stage_top)
+    if text_overlay.offset_left or text_overlay.offset_top:
+        raise RuntimeError("unexpected nested text overlay offset")
+    text_overlay = TextRenderResult(
+        image=text_overlay.image,
+        alpha_bbox=global_text_bbox,
+        offset_left=stage_left,
+        offset_top=stage_top,
+    )
+    bubble_layout = compute_bubble_layout(
+        canvas_width=width_px,
+        canvas_height=height_px,
+        text_bbox=text_overlay.alpha_bbox,
+        text_layout=text_layout,
+        font_size=actual_font_size,
+        outline_width=text_layout["outline_width"],
+    )
+    return PreparedBubble(
+        plan=plan,
+        text_overlay=text_overlay,
+        bubble_layout=bubble_layout,
+    )
+
+
 def render_bubbles(
     image_path: Path,
     output_path: Path,
@@ -487,53 +676,65 @@ def render_bubbles(
         raise RuntimeError("resvg not found; install resvg or use text_renderer=browser with bubble_renderer=browser")
 
     def _render_with_browser(browser: Any | None) -> None:
+        bubble_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        text_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        if browser is None and len(plans) > 1:
+            worker_count = min(4, len(plans))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                prepared_bubbles = list(
+                    executor.map(
+                        lambda plan: _prepare_rendered_bubble(
+                            plan=plan,
+                            width_px=width_px,
+                            height_px=height_px,
+                            actual_font_size=actual_font_size,
+                            browser=None,
+                            text_renderer=text_renderer,
+                            font_path=font_path,
+                            font_family=font_family,
+                            resvg_executable=resvg_executable,
+                            text_letter_spacing=text_letter_spacing,
+                            text_word_spacing=text_word_spacing,
+                            resvg_tu_override=resvg_tu_override,
+                        ),
+                        plans,
+                    )
+                )
+        else:
+            prepared_bubbles = [
+                _prepare_rendered_bubble(
+                    plan=plan,
+                    width_px=width_px,
+                    height_px=height_px,
+                    actual_font_size=actual_font_size,
+                    browser=browser,
+                    text_renderer=text_renderer,
+                    font_path=font_path,
+                    font_family=font_family,
+                    resvg_executable=resvg_executable,
+                    text_letter_spacing=text_letter_spacing,
+                    text_word_spacing=text_word_spacing,
+                    resvg_tu_override=resvg_tu_override,
+                )
+                for plan in plans
+            ]
+
         rendered_bubbles: list[RenderedBubble] = []
-        for plan in plans:
-            text_layout = compute_text_layout(
-                width_px,
-                height_px,
-                plan,
-                actual_font_size,
-                font_path=font_path,
-                letter_spacing_px=_parse_letter_spacing_px(text_letter_spacing),
-                resvg_tu_override=resvg_tu_override,
-            )
-            text_overlay = render_text_overlay(
-                renderer=text_renderer,
-                browser=browser,
-                canvas_width=width_px,
-                canvas_height=height_px,
-                plan=plan,
-                text_layout=text_layout,
-                font_path=font_path,
-                font_family=font_family,
-                resvg_executable=resvg_executable,
-                text_letter_spacing=text_letter_spacing,
-                text_word_spacing=text_word_spacing,
-                resvg_tu_override=resvg_tu_override,
-            )
-            bubble_layout = compute_bubble_layout(
-                canvas_width=width_px,
-                canvas_height=height_px,
-                text_bbox=text_overlay.alpha_bbox,
-                text_layout=text_layout,
-                font_size=actual_font_size,
-                outline_width=text_layout["outline_width"],
-            )
+        for prepared in prepared_bubbles:
             bubble_image = _resolve_bubble_image(
                 bubble_renderer=bubble_renderer,
                 bubble_asset=bubble_asset,
-                bubble_width=bubble_layout["bubble_width"],
-                bubble_height=bubble_layout["bubble_height"],
+                bubble_width=prepared.bubble_layout["bubble_width"],
+                bubble_height=prepared.bubble_layout["bubble_height"],
                 browser=browser,
                 resvg_executable=resvg_executable,
                 cache=bubble_cache,
             )
             rendered_bubbles.append(
                 RenderedBubble(
-                    plan=plan,
-                    text_overlay=text_overlay,
-                    bubble_layout=bubble_layout,
+                    plan=prepared.plan,
+                    text_overlay=prepared.text_overlay,
+                    bubble_layout=prepared.bubble_layout,
                     bubble_image=bubble_image,
                 )
             )
@@ -543,7 +744,7 @@ def render_bubbles(
             if len(group) == 1 and not use_vector_group_render:
                 item = group[0]
                 alpha_composite_clipped(
-                    base,
+                    bubble_layer,
                     item.bubble_image,
                     item.bubble_layout["bubble_left"],
                     item.bubble_layout["bubble_top"],
@@ -556,10 +757,17 @@ def render_bubbles(
                 browser=browser,
                 resvg_executable=resvg_executable,
             )
-            alpha_composite_clipped(base, merged_image, left, top)
+            alpha_composite_clipped(bubble_layer, merged_image, left, top)
 
         for item in rendered_bubbles:
-            base.alpha_composite(item.text_overlay.image)
+            alpha_composite_clipped(
+                text_layer,
+                item.text_overlay.image,
+                item.text_overlay.offset_left,
+                item.text_overlay.offset_top,
+            )
+        base.alpha_composite(bubble_layer)
+        base.alpha_composite(text_layer)
 
     needs_browser = text_renderer == "browser" or bubble_renderer == "browser"
     if needs_browser:
@@ -583,7 +791,7 @@ def render_bubbles(
     if output_path.suffix.lower() in {".jpg", ".jpeg"}:
         base.convert("RGB").save(output_path, quality=95)
     else:
-        base.save(output_path)
+        base.save(output_path, compress_level=1, optimize=False)
 
 
 def render_text_stage_preview(
@@ -624,13 +832,19 @@ def render_text_stage_preview(
                 letter_spacing_px=_parse_letter_spacing_px(text_letter_spacing),
                 resvg_tu_override=resvg_tu_override,
             )
+            stage_left, stage_top, stage_right, stage_bottom, local_text_layout = _local_text_stage(
+                canvas_width=width_px,
+                canvas_height=height_px,
+                text_layout=text_layout,
+                font_size=actual_font_size,
+            )
             text_overlay = render_text_overlay(
                 renderer=text_renderer,
                 browser=browser,
-                canvas_width=width_px,
-                canvas_height=height_px,
+                canvas_width=stage_right - stage_left,
+                canvas_height=stage_bottom - stage_top,
                 plan=plan,
-                text_layout=text_layout,
+                text_layout=local_text_layout,
                 font_path=font_path,
                 font_family=font_family,
                 resvg_executable=resvg_executable,
@@ -638,8 +852,9 @@ def render_text_stage_preview(
                 text_word_spacing=text_word_spacing,
                 resvg_tu_override=resvg_tu_override,
             )
-            left, top, right, bottom = text_overlay.alpha_bbox
-            text_bboxes.append(text_overlay.alpha_bbox)
+            global_alpha_bbox = _translate_bbox(text_overlay.alpha_bbox, stage_left, stage_top)
+            left, top, right, bottom = global_alpha_bbox
+            text_bboxes.append(global_alpha_bbox)
             guide_box = (
                 max(0, left - TEXT_STAGE_GUIDE_PAD_X),
                 max(0, top - TEXT_STAGE_GUIDE_PAD_Y),
@@ -653,7 +868,7 @@ def render_text_stage_preview(
                 outline=TEXT_STAGE_GUIDE_OUTLINE,
                 width=TEXT_STAGE_GUIDE_OUTLINE_WIDTH,
             )
-            base.alpha_composite(text_overlay.image)
+            alpha_composite_clipped(base, text_overlay.image, stage_left, stage_top)
 
     if text_renderer == "browser":
         from playwright.sync_api import sync_playwright

@@ -65,6 +65,8 @@ class SceneBubblePlan:
 class TextRenderResult:
     image: Image.Image
     alpha_bbox: tuple[int, int, int, int]
+    offset_left: int = 0
+    offset_top: int = 0
 
 
 def bubble_plan_to_dict(plan: BubblePlan) -> dict[str, Any]:

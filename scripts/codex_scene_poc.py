@@ -138,7 +138,7 @@ def save_mask_composite(
         head_mask=head_mask,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
+    image.save(path, compress_level=1, optimize=False)
 
 
 def _fit_panel(image: Image.Image, cell_width: int, cell_height: int) -> Image.Image:
@@ -242,7 +242,7 @@ def save_codex_board(
         notes=notes,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    board.save(path)
+    board.save(path, compress_level=1, optimize=False)
 
 
 def build_editable_scene_template(

@@ -37,10 +37,7 @@ def _wait_for_socket(path: Path, timeout_s: float = 8.0) -> bool:
     return False
 
 
-def ensure_worker_running() -> Path:
-    socket_path = _socket_path()
-    if socket_path.exists():
-        return socket_path
+def _start_worker_process() -> None:
     DEFAULT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with DEFAULT_LOG_PATH.open("ab") as handle:
         subprocess.Popen(
@@ -51,6 +48,15 @@ def ensure_worker_running() -> Path:
             stderr=handle,
             start_new_session=True,
         )
+
+
+def ensure_worker_running(*, force_restart: bool = False) -> Path:
+    socket_path = _socket_path()
+    if force_restart and socket_path.exists():
+        socket_path.unlink()
+    if socket_path.exists():
+        return socket_path
+    _start_worker_process()
     if not _wait_for_socket(socket_path):
         raise RuntimeError(f"worker did not start: {socket_path}")
     return socket_path
@@ -61,8 +67,8 @@ def worker_request(command: str, payload: dict[str, Any], *, mode: str) -> dict[
         raise RuntimeError(f"invalid worker mode: {mode}")
     if mode == "off":
         return None
-    try:
-        socket_path = ensure_worker_running()
+    def _request(*, force_restart: bool = False) -> dict[str, Any]:
+        socket_path = ensure_worker_running(force_restart=force_restart)
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(600)
             client.connect(str(socket_path))
@@ -81,7 +87,18 @@ def worker_request(command: str, payload: dict[str, Any], *, mode: str) -> dict[
         if response.get("status") == "error":
             raise RuntimeError(response.get("message", "worker request failed"))
         return response
-    except Exception:
+
+    try:
+        return _request()
+    except Exception as exc:
+        message = str(exc)
+        if "unsupported worker command" in message or "Expecting value" in message:
+            try:
+                return _request(force_restart=True)
+            except Exception:
+                if mode == "auto":
+                    return None
+                raise
         if mode == "auto":
             return None
         raise
