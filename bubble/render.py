@@ -11,14 +11,15 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from bubble.assets import (
+    ResolvedBubbleAsset,
     build_merged_bubble_svg_source,
     build_bubble_svg_html,
     build_font_css,
     bubble_png_to_rgba,
-    load_bubble_svg_source,
+    load_bubble_svg_source_from_asset,
     render_raw_svg_with_resvg,
     render_svg_with_resvg,
-    resolve_bubble_asset,
+    resolve_bubble_renderable_asset,
     resolve_chromium_executable,
     resolve_resvg_executable,
     warp_svg_source_to_aspect,
@@ -56,7 +57,7 @@ class RenderedBubble:
     text_overlay: TextRenderResult
     bubble_layout: dict[str, int]
     bubble_image: Image.Image
-    bubble_asset: Path
+    bubble_asset: ResolvedBubbleAsset
 
 
 @dataclass
@@ -353,17 +354,17 @@ def _render_bubble_svg_browser(
 def _bubble_cache_key(
     *,
     bubble_renderer: str,
-    bubble_asset: Path,
+    bubble_asset: ResolvedBubbleAsset,
     width: int,
     height: int,
 ) -> tuple[str, str, int, int]:
-    return bubble_renderer, str(bubble_asset.resolve()), width, height
+    return bubble_renderer, bubble_asset.source_key, width, height
 
 
 def _resolve_bubble_image(
     *,
     bubble_renderer: str,
-    bubble_asset: Path,
+    bubble_asset: ResolvedBubbleAsset,
     bubble_width: int,
     bubble_height: int,
     browser: Any | None,
@@ -380,8 +381,10 @@ def _resolve_bubble_image(
     if cached is not None:
         return cached
 
-    if bubble_asset.suffix.lower() == ".png":
-        image = bubble_png_to_rgba(bubble_asset).resize(
+    if bubble_asset.source_kind == "png":
+        if bubble_asset.asset_path is None:
+            raise RuntimeError("png bubble asset is missing asset_path")
+        image = bubble_png_to_rgba(bubble_asset.asset_path).resize(
             (bubble_width, bubble_height),
             Image.Resampling.LANCZOS,
         )
@@ -389,7 +392,7 @@ def _resolve_bubble_image(
         return image
 
     bubble_svg = warp_svg_source_to_aspect(
-        load_bubble_svg_source(bubble_asset),
+        load_bubble_svg_source_from_asset(bubble_asset),
         bubble_width / max(1, bubble_height),
     )
     if bubble_renderer == "resvg":
@@ -725,7 +728,7 @@ def render_bubbles(
 
         rendered_bubbles: list[RenderedBubble] = []
         for prepared in prepared_bubbles:
-            bubble_asset = resolve_bubble_asset(
+            bubble_asset = resolve_bubble_renderable_asset(
                 str(bubble_asset_override) if bubble_asset_override is not None else None,
                 bubble_type=prepared.plan.bubble_type,
             )
@@ -752,7 +755,7 @@ def render_bubbles(
 
         for group in _group_bubbles_for_merge(rendered_bubbles):
             group_asset = group[0].bubble_asset
-            use_vector_group_render = group_asset.suffix.lower() in {".svg", ".txt"}
+            use_vector_group_render = group_asset.source_kind == "svg"
             if len(group) == 1 and not use_vector_group_render:
                 item = group[0]
                 alpha_composite_clipped(

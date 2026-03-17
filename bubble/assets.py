@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pathops
@@ -30,6 +31,7 @@ from bubble.models import (
     PROJECT_ROOT,
     SVG_NS,
 )
+from bubble.procedural_bubbles import generate_procedural_bubble_svg, procedural_asset_key
 
 
 ET.register_namespace("", SVG_NS)
@@ -42,7 +44,24 @@ BUBBLE_ASSET_MANIFEST = PROJECT_ROOT / "assets" / "bubble_assets.json"
 @dataclass(frozen=True)
 class BubbleAssetCatalog:
     default_type: str
-    assets: dict[str, Path]
+    assets: dict[str, "BubbleAssetEntry"]
+
+
+@dataclass(frozen=True)
+class BubbleAssetEntry:
+    kind: str
+    path: Path | None = None
+    generator: str | None = None
+    params: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ResolvedBubbleAsset:
+    bubble_type: str
+    source_kind: str
+    source_key: str
+    asset_path: Path | None = None
+    svg_source: str | None = None
 
 
 def pick_font_path(explicit: str | None) -> str | None:
@@ -137,7 +156,11 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
     path = manifest_path or BUBBLE_ASSET_MANIFEST
     if not path.exists():
         legacy_asset = next((candidate for candidate in _legacy_bubble_asset_candidates() if candidate.exists()), None)
-        assets = {DEFAULT_BUBBLE_TYPE: legacy_asset} if legacy_asset is not None else {}
+        assets = (
+            {DEFAULT_BUBBLE_TYPE: BubbleAssetEntry(kind="static", path=legacy_asset)}
+            if legacy_asset is not None
+            else {}
+        )
         return BubbleAssetCatalog(default_type=DEFAULT_BUBBLE_TYPE, assets=assets)
 
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -150,16 +173,46 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
     if not isinstance(raw_assets, dict) or not raw_assets:
         raise RuntimeError(f"bubble asset manifest must include a non-empty types object: {path}")
 
-    resolved_assets: dict[str, Path] = {}
-    for bubble_type, raw_path in raw_assets.items():
+    resolved_assets: dict[str, BubbleAssetEntry] = {}
+    for bubble_type, raw_entry in raw_assets.items():
         if not isinstance(bubble_type, str) or not bubble_type.strip():
             raise RuntimeError(f"bubble asset manifest type keys must be non-empty strings: {path}")
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            raise RuntimeError(f"bubble asset manifest entry must be a non-empty path string: {path}")
-        asset_path = Path(raw_path)
-        if not asset_path.is_absolute():
-            asset_path = (path.parent / asset_path).resolve()
-        resolved_assets[bubble_type.strip()] = asset_path
+        normalized_type = bubble_type.strip()
+        if isinstance(raw_entry, str):
+            asset_path = Path(raw_entry)
+            if not asset_path.is_absolute():
+                asset_path = (path.parent / asset_path).resolve()
+            resolved_assets[normalized_type] = BubbleAssetEntry(kind="static", path=asset_path)
+            continue
+        if not isinstance(raw_entry, dict):
+            raise RuntimeError(f"bubble asset manifest entry must be a string or object: {path}")
+        kind = raw_entry.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            raise RuntimeError(f"bubble asset manifest object entry must include non-empty kind: {path}")
+        normalized_kind = kind.strip()
+        if normalized_kind in {"static", "static_svg", "static_png"}:
+            raw_path = raw_entry.get("path")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise RuntimeError(f"static bubble asset entry must include non-empty path: {path}")
+            asset_path = Path(raw_path)
+            if not asset_path.is_absolute():
+                asset_path = (path.parent / asset_path).resolve()
+            resolved_assets[normalized_type] = BubbleAssetEntry(kind="static", path=asset_path)
+            continue
+        if normalized_kind == "procedural":
+            generator = raw_entry.get("generator")
+            if not isinstance(generator, str) or not generator.strip():
+                raise RuntimeError(f"procedural bubble asset entry must include non-empty generator: {path}")
+            params = raw_entry.get("params", {})
+            if not isinstance(params, dict):
+                raise RuntimeError(f"procedural bubble asset params must be an object: {path}")
+            resolved_assets[normalized_type] = BubbleAssetEntry(
+                kind="procedural",
+                generator=generator.strip(),
+                params=params,
+            )
+            continue
+        raise RuntimeError(f"unsupported bubble asset kind '{normalized_kind}': {path}")
 
     default_type = default_type.strip()
     if default_type not in resolved_assets:
@@ -168,21 +221,62 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
 
 
 def resolve_bubble_asset(explicit: str | None, bubble_type: str | None = None) -> Path | None:
+    asset = resolve_bubble_renderable_asset(explicit, bubble_type)
+    return asset.asset_path if asset is not None else None
+
+
+def _resolved_path_source_kind(asset_path: Path) -> str:
+    suffix = asset_path.suffix.lower()
+    if suffix in {".svg", ".txt"}:
+        return "svg"
+    if suffix == ".png":
+        return "png"
+    raise RuntimeError(f"unsupported bubble asset type: {asset_path}")
+
+
+def resolve_bubble_renderable_asset(explicit: str | None, bubble_type: str | None = None) -> ResolvedBubbleAsset | None:
     candidates = []
     if explicit:
         candidates.append(Path(explicit))
     else:
         catalog = load_bubble_asset_catalog()
         normalized_type = bubble_type.strip() if isinstance(bubble_type, str) and bubble_type.strip() else catalog.default_type
-        resolved = catalog.assets.get(normalized_type)
-        if resolved is not None:
-            candidates.append(resolved)
+        entry = catalog.assets.get(normalized_type)
+        if entry is not None:
+            if entry.kind == "static":
+                if entry.path is not None:
+                    candidates.append(entry.path)
+            elif entry.kind == "procedural":
+                assert entry.generator is not None
+                params = entry.params or {}
+                return ResolvedBubbleAsset(
+                    bubble_type=normalized_type,
+                    source_kind="svg",
+                    source_key=procedural_asset_key(entry.generator, params),
+                    svg_source=generate_procedural_bubble_svg(entry.generator, params),
+                )
+            else:
+                raise RuntimeError(f"unsupported bubble asset entry kind: {entry.kind}")
         if normalized_type == catalog.default_type:
             candidates.extend(_legacy_bubble_asset_candidates())
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            resolved = candidate.resolve()
+            return ResolvedBubbleAsset(
+                bubble_type=bubble_type.strip() if isinstance(bubble_type, str) and bubble_type.strip() else DEFAULT_BUBBLE_TYPE,
+                source_kind=_resolved_path_source_kind(resolved),
+                source_key=f"file:{resolved}",
+                asset_path=resolved,
+            )
     return None
+
+
+def load_bubble_svg_source_from_asset(asset: ResolvedBubbleAsset) -> str:
+    if asset.svg_source is not None:
+        return asset.svg_source
+    if asset.asset_path is None:
+        raise RuntimeError("bubble asset does not contain an SVG source")
+    return load_bubble_svg_source(asset.asset_path)
 
 
 def resolve_chromium_executable() -> str | None:
@@ -531,15 +625,15 @@ def _pathops_matrix(
 
 def build_merged_bubble_svg_source(
     *,
-    bubble_asset: Path,
+    bubble_asset: ResolvedBubbleAsset,
     placements: list[dict[str, int]],
 ) -> tuple[str, int, int, int, int]:
     if not placements:
         raise RuntimeError("placements must be non-empty")
-    if bubble_asset.suffix.lower() not in {".svg", ".txt"}:
+    if bubble_asset.source_kind != "svg":
         raise RuntimeError("merged bubble SVG requires an SVG bubble asset")
 
-    asset_svg = load_bubble_svg_source(bubble_asset)
+    asset_svg = load_bubble_svg_source_from_asset(bubble_asset)
     request_paths: list[dict[str, object]] = []
     stroke_widths: list[float] = []
     for placement in placements:

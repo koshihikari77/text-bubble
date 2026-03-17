@@ -1,8 +1,88 @@
 {
   "default_type": "ellipse",
   "types": {
-    "ellipse": "bubble_ellipse.svg",
-    "square": "bubble_square.svg",
-    "narration": "bubble_narration_square.svg"
+    "ellipse": {
+      "kind": "static",
+      "path": "bubble_ellipse.svg"
+    },
+    "square": {
+      "kind": "static",
+      "path": "bubble_square.svg"
+    },
+    "narration": {
+      "kind": "static",
+      "path": "bubble_narration_square.svg"
+    },
+    "shout": {
+      "kind": "procedural",
+      "generator": "polygon_shout_panel",
+      "params": {
+        "view_box": [50, 50, 420, 660],
+        "points": [
+          [286.0, 122.0],
+          [378.0, 262.0],
+          [346.0, 496.0],
+          [262.0, 668.0],
+          [190.0, 506.0],
+          [166.0, 288.0]
+        ],
+        "curved_edges": [1, 2, 4, 5],
+        "curve_depth": 0.06
+      }
+    },
+    "wavy": {
+      "kind": "procedural",
+      "generator": "directional_offset_hill",
+      "params": {
+        "view_box": [0, 0, 360, 600],
+        "center_x": 180,
+        "center_y": 300,
+        "radius_x": 95,
+        "radius_y": 210,
+        "samples": 128,
+        "amp": 0.4,
+        "freq": 6,
+        "seed": 9,
+        "phase": 0.4,
+        "asymmetry": 0.15,
+        "radial_blend": 0.0
+      }
+    },
+    "wavy_fine": {
+      "kind": "procedural",
+      "generator": "directional_offset_hill",
+      "params": {
+        "view_box": [0, 0, 360, 600],
+        "center_x": 180,
+        "center_y": 300,
+        "radius_x": 95,
+        "radius_y": 210,
+        "samples": 128,
+        "amp": 0.36,
+        "freq": 15,
+        "seed": 9,
+        "phase": 0.4,
+        "asymmetry": 0.15,
+        "radial_blend": 0.0
+      }
+    },
+    "wavy_polygon": {
+      "kind": "procedural",
+      "generator": "polygon_wavy_panel",
+      "params": {
+        "view_box": [50, 50, 420, 660],
+        "points": [
+          [268.0, 186.0],
+          [360.0, 288.0],
+          [352.0, 502.0],
+          [256.0, 586.0],
+          [174.0, 512.0],
+          [166.0, 276.0]
+        ],
+        "round_ratio": 0.1407,
+        "edge_bulge": [3.694, 3.411, 3.438, 3.459, 3.325, 2.637],
+        "tension": 0.72
+      }
+    }
   }
 }
