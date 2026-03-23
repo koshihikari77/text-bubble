@@ -53,6 +53,9 @@ class BubbleAssetEntry:
     path: Path | None = None
     generator: str | None = None
     params: dict[str, Any] | None = None
+    safe_inset: dict[str, float] | None = None
+    safe_padding: dict[str, float] | None = None
+    stroke_width: float | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,54 @@ class ResolvedBubbleAsset:
     source_key: str
     asset_path: Path | None = None
     svg_source: str | None = None
+    generator: str | None = None
+    params: dict[str, Any] | None = None
+    safe_inset: dict[str, float] | None = None
+    safe_padding: dict[str, float] | None = None
+    stroke_width: float | None = None
+
+
+def _parse_safe_inset(raw_value: Any, *, manifest_path: Path) -> dict[str, float] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise RuntimeError(f"bubble asset safe_inset must be an object: {manifest_path}")
+    parsed: dict[str, float] = {}
+    for side in ("left", "right", "top", "bottom"):
+        raw_side = raw_value.get(side, 0.0)
+        if not isinstance(raw_side, (int, float)):
+            raise RuntimeError(f"bubble asset safe_inset.{side} must be numeric: {manifest_path}")
+        parsed[side] = float(raw_side)
+    if parsed["left"] + parsed["right"] >= 0.95 or parsed["top"] + parsed["bottom"] >= 0.95:
+        raise RuntimeError(f"bubble asset safe_inset leaves no usable area: {manifest_path}")
+    return parsed
+
+
+def _parse_stroke_width(raw_value: Any, *, manifest_path: Path) -> float | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, (int, float)):
+        raise RuntimeError(f"bubble asset stroke_width must be numeric: {manifest_path}")
+    parsed = float(raw_value)
+    if parsed <= 0:
+        raise RuntimeError(f"bubble asset stroke_width must be positive: {manifest_path}")
+    return parsed
+
+
+def _parse_safe_padding(raw_value: Any, *, manifest_path: Path) -> dict[str, float] | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, dict):
+        raise RuntimeError(f"bubble asset safe_padding must be an object: {manifest_path}")
+    parsed: dict[str, float] = {}
+    for key in ("left", "right", "top", "bottom", "min_px", "max_px"):
+        raw_item = raw_value.get(key)
+        if raw_item is None:
+            continue
+        if not isinstance(raw_item, (int, float)):
+            raise RuntimeError(f"bubble asset safe_padding.{key} must be numeric: {manifest_path}")
+        parsed[key] = float(raw_item)
+    return parsed
 
 
 def pick_font_path(explicit: str | None) -> str | None:
@@ -182,7 +233,10 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
             asset_path = Path(raw_entry)
             if not asset_path.is_absolute():
                 asset_path = (path.parent / asset_path).resolve()
-            resolved_assets[normalized_type] = BubbleAssetEntry(kind="static", path=asset_path)
+            resolved_assets[normalized_type] = BubbleAssetEntry(
+                kind="static",
+                path=asset_path,
+            )
             continue
         if not isinstance(raw_entry, dict):
             raise RuntimeError(f"bubble asset manifest entry must be a string or object: {path}")
@@ -197,7 +251,13 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
             asset_path = Path(raw_path)
             if not asset_path.is_absolute():
                 asset_path = (path.parent / asset_path).resolve()
-            resolved_assets[normalized_type] = BubbleAssetEntry(kind="static", path=asset_path)
+            resolved_assets[normalized_type] = BubbleAssetEntry(
+                kind="static",
+                path=asset_path,
+                safe_inset=_parse_safe_inset(raw_entry.get("safe_inset"), manifest_path=path),
+                safe_padding=_parse_safe_padding(raw_entry.get("safe_padding"), manifest_path=path),
+                stroke_width=_parse_stroke_width(raw_entry.get("stroke_width"), manifest_path=path),
+            )
             continue
         if normalized_kind == "procedural":
             generator = raw_entry.get("generator")
@@ -210,6 +270,9 @@ def load_bubble_asset_catalog(manifest_path: Path | None = None) -> BubbleAssetC
                 kind="procedural",
                 generator=generator.strip(),
                 params=params,
+                safe_inset=_parse_safe_inset(raw_entry.get("safe_inset"), manifest_path=path),
+                safe_padding=_parse_safe_padding(raw_entry.get("safe_padding"), manifest_path=path),
+                stroke_width=_parse_stroke_width(raw_entry.get("stroke_width"), manifest_path=path),
             )
             continue
         raise RuntimeError(f"unsupported bubble asset kind '{normalized_kind}': {path}")
@@ -234,26 +297,47 @@ def _resolved_path_source_kind(asset_path: Path) -> str:
     raise RuntimeError(f"unsupported bubble asset type: {asset_path}")
 
 
-def resolve_bubble_renderable_asset(explicit: str | None, bubble_type: str | None = None) -> ResolvedBubbleAsset | None:
+def resolve_bubble_renderable_asset(
+    explicit: str | None,
+    bubble_type: str | None = None,
+    *,
+    variant_seed: int | None = None,
+) -> ResolvedBubbleAsset | None:
     candidates = []
+    selected_entry: BubbleAssetEntry | None = None
     if explicit:
         candidates.append(Path(explicit))
     else:
         catalog = load_bubble_asset_catalog()
         normalized_type = bubble_type.strip() if isinstance(bubble_type, str) and bubble_type.strip() else catalog.default_type
         entry = catalog.assets.get(normalized_type)
+        selected_entry = entry
         if entry is not None:
             if entry.kind == "static":
                 if entry.path is not None:
                     candidates.append(entry.path)
             elif entry.kind == "procedural":
                 assert entry.generator is not None
-                params = entry.params or {}
+                params = copy.deepcopy(entry.params or {})
+                if variant_seed is not None and normalized_type in {
+                    "wavy",
+                    "wavy_fine",
+                    "wavy_polygon",
+                    "shout_rect_pointed",
+                    "shout_rect_pointed_drop",
+                    "shout_rect_pointed_kink",
+                }:
+                    params["seed"] = int(variant_seed)
                 return ResolvedBubbleAsset(
                     bubble_type=normalized_type,
                     source_kind="svg",
                     source_key=procedural_asset_key(entry.generator, params),
                     svg_source=generate_procedural_bubble_svg(entry.generator, params),
+                    generator=entry.generator,
+                    params=copy.deepcopy(entry.params) if entry.params is not None else None,
+                    safe_inset=copy.deepcopy(entry.safe_inset) if entry.safe_inset is not None else None,
+                    safe_padding=copy.deepcopy(entry.safe_padding) if entry.safe_padding is not None else None,
+                    stroke_width=entry.stroke_width,
                 )
             else:
                 raise RuntimeError(f"unsupported bubble asset entry kind: {entry.kind}")
@@ -267,16 +351,35 @@ def resolve_bubble_renderable_asset(explicit: str | None, bubble_type: str | Non
                 source_kind=_resolved_path_source_kind(resolved),
                 source_key=f"file:{resolved}",
                 asset_path=resolved,
+                generator=selected_entry.generator if selected_entry is not None else None,
+                params=copy.deepcopy(selected_entry.params) if selected_entry is not None and selected_entry.params is not None else None,
+                safe_inset=copy.deepcopy(selected_entry.safe_inset) if selected_entry is not None and selected_entry.safe_inset is not None else None,
+                safe_padding=copy.deepcopy(selected_entry.safe_padding) if selected_entry is not None and selected_entry.safe_padding is not None else None,
+                stroke_width=selected_entry.stroke_width if selected_entry is not None else None,
             )
     return None
 
 
 def load_bubble_svg_source_from_asset(asset: ResolvedBubbleAsset) -> str:
     if asset.svg_source is not None:
-        return asset.svg_source
-    if asset.asset_path is None:
-        raise RuntimeError("bubble asset does not contain an SVG source")
-    return load_bubble_svg_source(asset.asset_path)
+        svg_source = asset.svg_source
+    else:
+        if asset.asset_path is None:
+            raise RuntimeError("bubble asset does not contain an SVG source")
+        svg_source = load_bubble_svg_source(asset.asset_path)
+
+    if asset.stroke_width is not None:
+        svg_source = re.sub(r"--strokeW\s*:\s*[0-9.]+", f"--strokeW: {asset.stroke_width:g}", svg_source)
+    if "non-scaling-stroke" not in svg_source:
+        svg_source = svg_source.replace(
+            "stroke-linejoin: round;",
+            "stroke-linejoin: round; vector-effect: non-scaling-stroke;",
+        )
+        svg_source = svg_source.replace(
+            'class="bubble"',
+            'class="bubble" vector-effect="non-scaling-stroke"',
+        )
+    return svg_source
 
 
 def resolve_chromium_executable() -> str | None:
@@ -646,7 +749,7 @@ def build_merged_bubble_svg_source(
         vb_x, vb_y, vb_w, vb_h = viewbox
         scale_x = bubble_width / max(vb_w, 1e-6)
         scale_y = bubble_height / max(vb_h, 1e-6)
-        stroke_widths.append(stroke_width * ((abs(scale_x) + abs(scale_y)) / 2.0))
+        stroke_widths.append(stroke_width)
 
         for d_value, source_matrix in path_specs:
             request_paths.append({
@@ -681,7 +784,10 @@ def build_merged_bubble_svg_source(
     path_pen = SVGPathPen(None)
     merged_path.draw(path_pen)
     left_bound, top_bound, right_bound, bottom_bound = merged_path.bounds
-    stroke_width_px = max(0.75, (sum(stroke_widths) / max(1, len(stroke_widths))) * MERGED_BUBBLE_STROKE_SCALE)
+    base_stroke_width = bubble_asset.stroke_width if bubble_asset.stroke_width is not None else (
+        sum(stroke_widths) / max(1, len(stroke_widths))
+    )
+    stroke_width_px = max(0.75, base_stroke_width * MERGED_BUBBLE_STROKE_SCALE)
     min_x = float(left_bound)
     min_y = float(top_bound)
     max_x = float(right_bound)
@@ -702,6 +808,7 @@ def build_merged_bubble_svg_source(
         stroke-width="{stroke_width_px:.3f}"
         stroke-linecap="round"
         stroke-linejoin="round"
+        vector-effect="non-scaling-stroke"
         fill-rule="nonzero" />
 </svg>"""
     return svg_source, left, top, width, height

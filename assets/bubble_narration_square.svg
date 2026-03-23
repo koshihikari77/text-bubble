@@ -3,7 +3,7 @@
     <style>
       :root {
         --stroke: #111;
-        --strokeW: 6;
+        --strokeW: 2.2;
         --fill: #ffffff;
         --fillOpacity: 0.88;
       }

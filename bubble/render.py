@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import io
 import os
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from bubble.assets import (
 )
 from bubble.layout import compute_bubble_layout, compute_text_layout
 from bubble.models import DEFAULT_FONT_DIVISOR, BubblePlan, TEXT_COLOR, TEXT_SHADOW, TextRenderResult
+from bubble.procedural_bubbles import generate_procedural_bubble_svg
 from bubble.text_render_resvg_hybrid import render_text_overlay_resvg_hybrid
 
 
@@ -37,6 +39,9 @@ TEXT_STAGE_GUIDE_RADIUS = 12
 TEXT_STAGE_GUIDE_OUTLINE_WIDTH = 2
 LOCAL_TEXT_STAGE_PADDING_RATIO = 1.2
 _TEXT_OVERLAY_CACHE: dict[tuple[Any, ...], TextRenderResult] = {}
+BUBBLE_TEXT_ALPHA_THRESHOLD = 96
+BUBBLE_TEXT_SAFE_MARGIN_PX = 4
+SAFE_INSET_GROWTH_FACTORS = (1.0, 1.05, 1.12, 1.22, 1.34, 1.48, 1.64)
 
 
 def _parse_letter_spacing_px(value: str | None, default: float = -1.0) -> float:
@@ -49,6 +54,19 @@ def _parse_letter_spacing_px(value: str | None, default: float = -1.0) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _bubble_variant_seed(plan: BubblePlan) -> int:
+    payload = "|".join(
+        [
+            plan.bubble_type,
+            ",".join(str(sentence_id) for sentence_id in plan.sentence_ids),
+            "\n".join(plan.columns),
+            plan.speaker_id,
+        ]
+    ).encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 @dataclass
@@ -65,6 +83,123 @@ class PreparedBubble:
     plan: BubblePlan
     text_overlay: TextRenderResult
     bubble_layout: dict[str, int]
+    local_text_bbox: tuple[int, int, int, int]
+    bubble_asset: ResolvedBubbleAsset
+
+
+def _layout_with_safe_inset_growth(
+    *,
+    text_bbox: tuple[int, int, int, int],
+    base_layout: dict[str, int],
+    safe_inset: dict[str, float],
+    scale: float,
+) -> dict[str, int]:
+    text_left, text_top, text_right, text_bottom = text_bbox
+    inset_left = float(safe_inset.get("left", 0.0))
+    inset_right = float(safe_inset.get("right", 0.0))
+    inset_top = float(safe_inset.get("top", 0.0))
+    inset_bottom = float(safe_inset.get("bottom", 0.0))
+    usable_width_ratio = max(0.05, 1.0 - inset_left - inset_right)
+    usable_height_ratio = max(0.05, 1.0 - inset_top - inset_bottom)
+    bubble_width = max(1, int(round(base_layout["bubble_width"] * scale)))
+    bubble_height = max(1, int(round(base_layout["bubble_height"] * scale)))
+    text_center_x = (text_left + text_right) / 2.0
+    text_center_y = (text_top + text_bottom) / 2.0
+    bubble_left = int(round(text_center_x - bubble_width * (inset_left + usable_width_ratio / 2.0)))
+    bubble_top = int(round(text_center_y - bubble_height * (inset_top + usable_height_ratio / 2.0)))
+    bubble_right = bubble_left + bubble_width
+    bubble_bottom = bubble_top + bubble_height
+    return {
+        **base_layout,
+        "bubble_left": bubble_left,
+        "bubble_top": bubble_top,
+        "bubble_right": bubble_right,
+        "bubble_bottom": bubble_bottom,
+        "bubble_width": bubble_width,
+        "bubble_height": bubble_height,
+    }
+
+
+def _text_fits_bubble_alpha(
+    *,
+    bubble_image: Image.Image,
+    bubble_layout: dict[str, int],
+    text_bbox: tuple[int, int, int, int],
+) -> bool:
+    alpha = bubble_image.getchannel("A")
+    rel_left = text_bbox[0] - bubble_layout["bubble_left"]
+    rel_top = text_bbox[1] - bubble_layout["bubble_top"]
+    rel_right = text_bbox[2] - bubble_layout["bubble_left"]
+    rel_bottom = text_bbox[3] - bubble_layout["bubble_top"]
+    rel_left -= BUBBLE_TEXT_SAFE_MARGIN_PX
+    rel_top -= BUBBLE_TEXT_SAFE_MARGIN_PX
+    rel_right += BUBBLE_TEXT_SAFE_MARGIN_PX
+    rel_bottom += BUBBLE_TEXT_SAFE_MARGIN_PX
+    if rel_left < 0 or rel_top < 0 or rel_right > alpha.width or rel_bottom > alpha.height:
+        return False
+    crop = alpha.crop((rel_left, rel_top, rel_right, rel_bottom))
+    return crop.getextrema()[0] >= BUBBLE_TEXT_ALPHA_THRESHOLD
+
+
+def _fit_prepared_bubble_to_alpha(
+    *,
+    prepared: PreparedBubble,
+    bubble_renderer: str,
+    browser: Any | None,
+    resvg_executable: str | None,
+    cache: dict[tuple[str, str, int, int], Image.Image],
+) -> tuple[dict[str, int], Image.Image]:
+    bubble_layout = dict(prepared.bubble_layout)
+    bubble_image = _resolve_bubble_image(
+        bubble_renderer=bubble_renderer,
+        bubble_asset=prepared.bubble_asset,
+        bubble_width=bubble_layout["bubble_width"],
+        bubble_height=bubble_layout["bubble_height"],
+        bubble_layout=bubble_layout,
+        local_text_bbox=prepared.local_text_bbox,
+        browser=browser,
+        resvg_executable=resvg_executable,
+        cache=cache,
+    )
+    if prepared.plan.bubble_type.startswith("shout_rect"):
+        return bubble_layout, bubble_image
+    safe_inset = prepared.bubble_asset.safe_inset
+    if not safe_inset:
+        return bubble_layout, bubble_image
+    if _text_fits_bubble_alpha(
+        bubble_image=bubble_image,
+        bubble_layout=bubble_layout,
+        text_bbox=prepared.text_overlay.alpha_bbox,
+    ):
+        return bubble_layout, bubble_image
+
+    for scale in SAFE_INSET_GROWTH_FACTORS[1:]:
+        grown_layout = _layout_with_safe_inset_growth(
+            text_bbox=prepared.text_overlay.alpha_bbox,
+            base_layout=prepared.bubble_layout,
+            safe_inset=safe_inset,
+            scale=scale,
+        )
+        grown_image = _resolve_bubble_image(
+            bubble_renderer=bubble_renderer,
+            bubble_asset=prepared.bubble_asset,
+            bubble_width=grown_layout["bubble_width"],
+            bubble_height=grown_layout["bubble_height"],
+            bubble_layout=grown_layout,
+            local_text_bbox=prepared.local_text_bbox,
+            browser=browser,
+            resvg_executable=resvg_executable,
+            cache=cache,
+        )
+        if _text_fits_bubble_alpha(
+            bubble_image=grown_image,
+            bubble_layout=grown_layout,
+            text_bbox=prepared.text_overlay.alpha_bbox,
+        ):
+            return grown_layout, grown_image
+        bubble_layout = grown_layout
+        bubble_image = grown_image
+    return bubble_layout, bubble_image
 
 
 def alpha_composite_clipped(base: Image.Image, overlay: Image.Image, left: int, top: int) -> None:
@@ -357,7 +492,17 @@ def _bubble_cache_key(
     bubble_asset: ResolvedBubbleAsset,
     width: int,
     height: int,
-) -> tuple[str, str, int, int]:
+    bubble_layout: dict[str, int] | None = None,
+    local_text_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[Any, ...]:
+    if bubble_asset.bubble_type.startswith("shout_rect") and bubble_layout is not None:
+        return (
+            bubble_renderer,
+            bubble_asset.source_key,
+            width,
+            height,
+            repr(bubble_layout.get("shape_layout")),
+        )
     return bubble_renderer, bubble_asset.source_key, width, height
 
 
@@ -367,15 +512,19 @@ def _resolve_bubble_image(
     bubble_asset: ResolvedBubbleAsset,
     bubble_width: int,
     bubble_height: int,
+    bubble_layout: dict[str, int] | None,
+    local_text_bbox: tuple[int, int, int, int] | None,
     browser: Any | None,
     resvg_executable: str | None,
-    cache: dict[tuple[str, str, int, int], Image.Image],
+    cache: dict[tuple[Any, ...], Image.Image],
 ) -> Image.Image:
     cache_key = _bubble_cache_key(
         bubble_renderer=bubble_renderer,
         bubble_asset=bubble_asset,
         width=bubble_width,
         height=bubble_height,
+        bubble_layout=bubble_layout,
+        local_text_bbox=local_text_bbox,
     )
     cached = cache.get(cache_key)
     if cached is not None:
@@ -391,10 +540,31 @@ def _resolve_bubble_image(
         cache[cache_key] = image
         return image
 
-    bubble_svg = warp_svg_source_to_aspect(
-        load_bubble_svg_source_from_asset(bubble_asset),
-        bubble_width / max(1, bubble_height),
-    )
+    if bubble_asset.bubble_type.startswith("shout_rect") and bubble_asset.generator and bubble_asset.params is not None:
+        if bubble_layout is None or local_text_bbox is None:
+            raise RuntimeError("shout_rect bubble rendering requires bubble_layout and local_text_bbox")
+        procedural_params = dict(bubble_asset.params)
+        procedural_params.update(
+            {
+                "bubble_width": bubble_width,
+                "bubble_height": bubble_height,
+                "text_left": int(local_text_bbox[0]),
+                "text_top": int(local_text_bbox[1]),
+                "text_right": int(local_text_bbox[2]),
+                "text_bottom": int(local_text_bbox[3]),
+                "padding_left": int(bubble_layout["padding_left"]),
+                "padding_right": int(bubble_layout["padding_right"]),
+                "padding_top": int(bubble_layout["padding_top"]),
+                "padding_bottom": int(bubble_layout["padding_bottom"]),
+                "shape_layout": bubble_layout.get("shape_layout"),
+            }
+        )
+        bubble_svg = generate_procedural_bubble_svg(bubble_asset.generator, procedural_params)
+    else:
+        bubble_svg = warp_svg_source_to_aspect(
+            load_bubble_svg_source_from_asset(bubble_asset),
+            bubble_width / max(1, bubble_height),
+        )
     if bubble_renderer == "resvg":
         if not resvg_executable:
             raise RuntimeError("resvg not found; install resvg or use --bubble-renderer browser")
@@ -558,11 +728,19 @@ def _prepare_rendered_bubble(
     text_renderer: str,
     font_path: str | None,
     font_family: str | None,
+    bubble_asset_override: Path | None,
     resvg_executable: str | None,
     text_letter_spacing: str,
     text_word_spacing: str,
     resvg_tu_override: bool,
 ) -> PreparedBubble:
+    bubble_asset = resolve_bubble_renderable_asset(
+        str(bubble_asset_override) if bubble_asset_override is not None else None,
+        bubble_type=plan.bubble_type,
+        variant_seed=_bubble_variant_seed(plan),
+    )
+    if bubble_asset is None:
+        raise RuntimeError(f"bubble asset not found for type: {plan.bubble_type}")
     text_layout = compute_text_layout(
         width_px,
         height_px,
@@ -644,11 +822,24 @@ def _prepare_rendered_bubble(
         text_layout=text_layout,
         font_size=actual_font_size,
         outline_width=text_layout["outline_width"],
+        bubble_type=plan.bubble_type,
+        variant_seed=_bubble_variant_seed(plan),
+        bubble_params=bubble_asset.params,
+        safe_inset=bubble_asset.safe_inset,
+        safe_padding=bubble_asset.safe_padding,
+    )
+    local_text_bbox = (
+        int(text_overlay.alpha_bbox[0] - bubble_layout["bubble_left"]),
+        int(text_overlay.alpha_bbox[1] - bubble_layout["bubble_top"]),
+        int(text_overlay.alpha_bbox[2] - bubble_layout["bubble_left"]),
+        int(text_overlay.alpha_bbox[3] - bubble_layout["bubble_top"]),
     )
     return PreparedBubble(
         plan=plan,
         text_overlay=text_overlay,
         bubble_layout=bubble_layout,
+        local_text_bbox=local_text_bbox,
+        bubble_asset=bubble_asset,
     )
 
 
@@ -699,6 +890,7 @@ def render_bubbles(
                             text_renderer=text_renderer,
                             font_path=font_path,
                             font_family=font_family,
+                            bubble_asset_override=bubble_asset_override,
                             resvg_executable=resvg_executable,
                             text_letter_spacing=text_letter_spacing,
                             text_word_spacing=text_word_spacing,
@@ -718,6 +910,7 @@ def render_bubbles(
                     text_renderer=text_renderer,
                     font_path=font_path,
                     font_family=font_family,
+                    bubble_asset_override=bubble_asset_override,
                     resvg_executable=resvg_executable,
                     text_letter_spacing=text_letter_spacing,
                     text_word_spacing=text_word_spacing,
@@ -728,17 +921,10 @@ def render_bubbles(
 
         rendered_bubbles: list[RenderedBubble] = []
         for prepared in prepared_bubbles:
-            bubble_asset = resolve_bubble_renderable_asset(
-                str(bubble_asset_override) if bubble_asset_override is not None else None,
-                bubble_type=prepared.plan.bubble_type,
-            )
-            if bubble_asset is None:
-                raise RuntimeError(f"bubble asset not found for type: {prepared.plan.bubble_type}")
-            bubble_image = _resolve_bubble_image(
+            bubble_asset = prepared.bubble_asset
+            bubble_layout, bubble_image = _fit_prepared_bubble_to_alpha(
+                prepared=prepared,
                 bubble_renderer=bubble_renderer,
-                bubble_asset=bubble_asset,
-                bubble_width=prepared.bubble_layout["bubble_width"],
-                bubble_height=prepared.bubble_layout["bubble_height"],
                 browser=browser,
                 resvg_executable=resvg_executable,
                 cache=bubble_cache,
@@ -747,7 +933,7 @@ def render_bubbles(
                 RenderedBubble(
                     plan=prepared.plan,
                     text_overlay=prepared.text_overlay,
-                    bubble_layout=prepared.bubble_layout,
+                    bubble_layout=bubble_layout,
                     bubble_image=bubble_image,
                     bubble_asset=bubble_asset,
                 )
@@ -755,7 +941,17 @@ def render_bubbles(
 
         for group in _group_bubbles_for_merge(rendered_bubbles):
             group_asset = group[0].bubble_asset
-            use_vector_group_render = group_asset.source_kind == "svg"
+            is_shout_rect_group = group_asset.bubble_type.startswith("shout_rect")
+            use_vector_group_render = group_asset.source_kind == "svg" and not is_shout_rect_group
+            if is_shout_rect_group:
+                for item in group:
+                    alpha_composite_clipped(
+                        bubble_layer,
+                        item.bubble_image,
+                        item.bubble_layout["bubble_left"],
+                        item.bubble_layout["bubble_top"],
+                    )
+                continue
             if len(group) == 1 and not use_vector_group_render:
                 item = group[0]
                 alpha_composite_clipped(
