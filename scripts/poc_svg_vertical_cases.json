@@ -1,0 +1,31 @@
+[
+  {
+    "id": "R1",
+    "text": "縦書きテスト",
+    "writingMode": "vertical-rl"
+  },
+  {
+    "id": "R2",
+    "text": "縦書きテストABC",
+    "writingMode": "vertical-rl",
+    "textOrientation": "mixed"
+  },
+  {
+    "id": "R3",
+    "text": "縦書きテストABC",
+    "writingMode": "vertical-rl",
+    "textOrientation": "upright"
+  },
+  {
+    "id": "R4",
+    "text": "縦書きテストABCー？！",
+    "writingMode": "vertical-rl",
+    "textOrientation": "mixed"
+  },
+  {
+    "id": "R5",
+    "text": "夜見のどこみてるのー？",
+    "writingMode": "vertical-rl",
+    "textOrientation": "mixed"
+  }
+]
