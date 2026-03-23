@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import importlib
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import os
 
 from bubble.models import (
     AssignmentBubblePlan,
@@ -12,6 +11,7 @@ from bubble.models import (
     ReflowBubblePlan,
     SceneBubblePlan,
 )
+from bubble.scene_planners import DEFAULT_SCENE_PLANNER, resolve_scene_planner
 from bubble.validation import compose_bubble_plans
 
 
@@ -25,7 +25,7 @@ class LLMRoute:
 class RenderConfig:
     font_path: str | None
     font_family: str | None
-    bubble_asset: Path
+    bubble_asset: Path | None
     font_size: int
     text_renderer: str
     bubble_renderer: str
@@ -53,24 +53,100 @@ class RunPipelineResult:
     reflow_workers: int
 
 
-def _solver_module_classes() -> tuple[Any, Any, Any]:
-    solver_module = _import_cp_sat_scene_solver()
-    return solver_module, solver_module.Rect, solver_module.PlacementChoice
+@dataclass(frozen=True)
+class MaskBundle:
+    face_mask: Any
+    person_mask: Any
+    chest_mask: Any | None
+    lower_mask: Any | None
+    head_mask: Any | None
+    face_source: str
+
+
+def default_scene_planner() -> str:
+    return os.environ.get("TEXT_BUBBLE_SCENE_PLANNER", DEFAULT_SCENE_PLANNER)
 
 
 def _dialogue_text(dialogue_lines: list[str]) -> str:
     return "\n".join(dialogue_lines)
 
 
-def _scripts_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "scripts"
+def _cp_sat_module() -> Any:
+    from bubble.scene_planners import cp_sat
+
+    return cp_sat
 
 
 def _import_cp_sat_scene_solver() -> Any:
-    scripts_dir = _scripts_dir()
-    if str(scripts_dir) not in sys.path:
-        sys.path.insert(0, str(scripts_dir))
-    return importlib.import_module("cp_sat_scene_solver")
+    return _cp_sat_module()
+
+
+def _mask_shape(mask: Any) -> tuple[int, int]:
+    shape = getattr(mask, "shape", None)
+    if not isinstance(shape, tuple) or len(shape) != 2:
+        raise RuntimeError("mask must be 2-dimensional")
+    return int(shape[0]), int(shape[1])
+
+
+def _non_empty_mask(mask: Any) -> bool:
+    cp_sat = _cp_sat_module()
+    return bool(cp_sat.np.any(mask))
+
+
+def _normalize_optional_mask(mask: Any | None, *, name: str, person_mask: Any) -> Any | None:
+    if mask is None:
+        return None
+    cp_sat = _cp_sat_module()
+    if _mask_shape(mask) != _mask_shape(person_mask):
+        raise RuntimeError(f"{name} mask shape does not match person mask")
+    normalized = mask.astype(bool) & person_mask
+    if not cp_sat.np.any(normalized):
+        return None
+    return normalized
+
+
+def load_mask_bundle(
+    *,
+    person_mask_path: Path,
+    face_mask_path: Path,
+    chest_mask_path: Path | None = None,
+    lower_mask_path: Path | None = None,
+    head_mask_path: Path | None = None,
+) -> MaskBundle:
+    cp_sat = _cp_sat_module()
+    person_mask = cp_sat.load_binary_mask(person_mask_path)
+    face_mask = cp_sat.load_binary_mask(face_mask_path)
+    head_mask = cp_sat.load_binary_mask(head_mask_path) if head_mask_path is not None else None
+    chest_mask = cp_sat.load_binary_mask(chest_mask_path) if chest_mask_path is not None else None
+    lower_mask = cp_sat.load_binary_mask(lower_mask_path) if lower_mask_path is not None else None
+
+    if _mask_shape(person_mask) != _mask_shape(face_mask):
+        raise RuntimeError("person mask and face mask must have the same shape")
+    if not _non_empty_mask(person_mask):
+        raise RuntimeError("person mask is empty")
+    face_source = "face"
+    if not _non_empty_mask(face_mask):
+        if head_mask is not None and _non_empty_mask(head_mask):
+            face_mask = head_mask
+            face_source = "head-fallback"
+        else:
+            raise RuntimeError("face mask is empty and head fallback is unavailable")
+    head_mask = _normalize_optional_mask(head_mask, name="head", person_mask=person_mask)
+    chest_mask = _normalize_optional_mask(chest_mask, name="chest", person_mask=person_mask)
+    lower_mask = _normalize_optional_mask(lower_mask, name="lower", person_mask=person_mask)
+    return MaskBundle(
+        face_mask=face_mask,
+        person_mask=person_mask,
+        chest_mask=chest_mask,
+        lower_mask=lower_mask,
+        head_mask=head_mask,
+        face_source=face_source,
+    )
+
+
+def _solver_module_classes() -> tuple[Any, Any, Any]:
+    solver_module = _cp_sat_module()
+    return solver_module, solver_module.Rect, solver_module.PlacementChoice
 
 
 def resolve_scene_route(
@@ -119,7 +195,7 @@ def materialize_scene_bundle(
     font_size: int,
     source: str,
 ) -> ScenePlacementBundle:
-    solver_module = _import_cp_sat_scene_solver()
+    solver_module = _cp_sat_module()
 
     evaluated_solution = solver_module.evaluate_scene_layout(
         reflow_plans=reflow_plans,
@@ -143,6 +219,94 @@ def materialize_scene_bundle(
         composed_plans=composed_plans,
         evaluated_solution=evaluated_solution,
         debug_payload=debug_payload,
+    )
+
+
+def solve_cp_sat_scene_bundle(
+    *,
+    dialogue_lines: list[str],
+    reflow_plans: list[ReflowBubblePlan],
+    image_width: int,
+    image_height: int,
+    masks: MaskBundle,
+    font_size: int,
+    source: str = "cp-sat",
+) -> ScenePlacementBundle:
+    solver_module = _cp_sat_module()
+    evaluated_solution = solver_module.solve_scene_layout(
+        reflow_plans=reflow_plans,
+        image_width=image_width,
+        image_height=image_height,
+        face_mask=masks.face_mask,
+        person_mask=masks.person_mask,
+        chest_mask=masks.chest_mask,
+        lower_mask=masks.lower_mask,
+        head_mask=masks.head_mask,
+        font_size=font_size,
+    )
+    bundle = bundle_from_evaluated_solution(
+        dialogue_lines=dialogue_lines,
+        reflow_plans=reflow_plans,
+        evaluated_solution=evaluated_solution,
+        source=source,
+    )
+    bundle.debug_payload["face_source"] = masks.face_source
+    bundle.debug_payload["font_size"] = font_size
+    return bundle
+
+
+def plan_scene(
+    *,
+    planner: str,
+    image_path: Path,
+    dialogue_lines: list[str],
+    reflow_plans: list[ReflowBubblePlan],
+    route: LLMRoute,
+    temperature: float,
+    image_width: int,
+    image_height: int,
+    masks: MaskBundle | None,
+    font_size: int,
+) -> ScenePlacementBundle:
+    resolved_planner = resolve_scene_planner(planner)
+    if resolved_planner == "cp-sat":
+        if masks is None:
+            raise RuntimeError("cp-sat planner requires person and face masks")
+        return solve_cp_sat_scene_bundle(
+            dialogue_lines=dialogue_lines,
+            reflow_plans=reflow_plans,
+            image_width=image_width,
+            image_height=image_height,
+            masks=masks,
+            font_size=font_size,
+            source="cp-sat",
+        )
+    _, scene_plans = infer_scene_stage(
+        image_path=image_path,
+        dialogue_lines=dialogue_lines,
+        route=route,
+        temperature=temperature,
+    )
+    if masks is None:
+        return compose_scene_bundle(
+            dialogue_lines=dialogue_lines,
+            reflow_plans=reflow_plans,
+            scene_plans=scene_plans,
+            source="scene-llm",
+        )
+    return materialize_scene_bundle(
+        dialogue_lines=dialogue_lines,
+        reflow_plans=reflow_plans,
+        scene_plans=scene_plans,
+        image_width=image_width,
+        image_height=image_height,
+        face_mask=masks.face_mask,
+        person_mask=masks.person_mask,
+        chest_mask=masks.chest_mask,
+        lower_mask=masks.lower_mask,
+        head_mask=masks.head_mask,
+        font_size=font_size,
+        source="scene-llm",
     )
 
 
@@ -261,7 +425,7 @@ def render_scene_bundle(
         plans=bundle.composed_plans,
         font_path=config.font_path,
         font_family=config.font_family,
-        bubble_asset=config.bubble_asset,
+        bubble_asset_override=config.bubble_asset,
         font_size=config.font_size,
         text_renderer=config.text_renderer,
         bubble_renderer=config.bubble_renderer,
@@ -281,11 +445,8 @@ def run_pipeline(
     reflow_workers: int,
     image_width: int,
     image_height: int,
-    face_mask: Any,
-    person_mask: Any,
-    chest_mask: Any | None,
-    lower_mask: Any | None,
-    head_mask: Any | None,
+    planner: str,
+    masks: MaskBundle | None,
     font_size: int,
 ) -> RunPipelineResult:
     from bubble.infer import infer_assignment_plans, infer_reflow_plans
@@ -300,34 +461,18 @@ def run_pipeline(
         assignment_plans=assignment_plans,
         reflow_workers=reflow_workers,
     )
-    _, scene_plans = infer_scene_stage(
+    scene_bundle = plan_scene(
+        planner=planner,
         image_path=image_path,
         dialogue_lines=dialogue_lines,
+        reflow_plans=reflow_plans,
         route=scene_route,
         temperature=temperature,
+        image_width=image_width,
+        image_height=image_height,
+        masks=masks,
+        font_size=font_size,
     )
-    if face_mask is None or person_mask is None:
-        scene_bundle = compose_scene_bundle(
-            dialogue_lines=dialogue_lines,
-            reflow_plans=reflow_plans,
-            scene_plans=scene_plans,
-            source="scene-llm",
-        )
-    else:
-        scene_bundle = materialize_scene_bundle(
-            dialogue_lines=dialogue_lines,
-            reflow_plans=reflow_plans,
-            scene_plans=scene_plans,
-            image_width=image_width,
-            image_height=image_height,
-            face_mask=face_mask,
-            person_mask=person_mask,
-            chest_mask=chest_mask,
-            lower_mask=lower_mask,
-            head_mask=head_mask,
-            font_size=font_size,
-            source="scene-llm",
-        )
     return RunPipelineResult(
         dialogue_lines=dialogue_lines,
         assignment_plans=assignment_plans,

@@ -22,7 +22,8 @@ def _socket_path() -> Path:
 def _worker_cmd() -> list[str]:
     return [
         sys.executable,
-        str(PROJECT_ROOT / "scripts" / "text_bubble_worker.py"),
+        "-m",
+        "bubble.worker_server",
         "--socket",
         str(_socket_path()),
     ]

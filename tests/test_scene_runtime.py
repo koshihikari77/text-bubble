@@ -1,18 +1,41 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image
 
 from bubble.models import ReflowBubblePlan, SceneBubblePlan
 from bubble.scene_runtime import (
     bundle_from_evaluated_solution,
     compose_scene_bundle,
+    default_scene_planner,
     deserialize_evaluated_solution,
+    load_mask_bundle,
+    render_scene_bundle,
     resolve_scene_route,
     serialize_evaluated_solution,
+    RenderConfig,
+    ScenePlacementBundle,
 )
 
 
 class SceneRuntimeTests(unittest.TestCase):
+    def test_default_scene_planner_uses_env_override(self) -> None:
+        previous = os.environ.get("TEXT_BUBBLE_SCENE_PLANNER")
+        os.environ["TEXT_BUBBLE_SCENE_PLANNER"] = "llm"
+        try:
+            self.assertEqual(default_scene_planner(), "llm")
+        finally:
+            if previous is None:
+                os.environ.pop("TEXT_BUBBLE_SCENE_PLANNER", None)
+            else:
+                os.environ["TEXT_BUBBLE_SCENE_PLANNER"] = previous
+
     def test_resolve_scene_route_defaults_to_main_route(self) -> None:
         route = resolve_scene_route(
             default_server="http://127.0.0.1:8080/v1",
@@ -92,6 +115,63 @@ class SceneRuntimeTests(unittest.TestCase):
         self.assertEqual(restored.placements[0].text_box.left, 10)
         self.assertEqual(bundle.debug_payload["placement_source"], "cp-sat")
         self.assertEqual(bundle.evaluated_solution.placements[0].slot, "top-right")
+
+    def test_load_mask_bundle_uses_head_fallback_and_drops_empty_optional_masks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            person = np.zeros((6, 6), dtype=np.uint8)
+            person[1:5, 1:5] = 255
+            face = np.zeros((6, 6), dtype=np.uint8)
+            head = np.zeros((6, 6), dtype=np.uint8)
+            head[1:3, 2:4] = 255
+            chest = np.zeros((6, 6), dtype=np.uint8)
+            lower = np.zeros((6, 6), dtype=np.uint8)
+            for name, mask in {
+                "person": person,
+                "face": face,
+                "head": head,
+                "chest": chest,
+                "lower": lower,
+            }.items():
+                Image.fromarray(mask, mode="L").save(tmp_path / f"{name}.png")
+
+            bundle = load_mask_bundle(
+                person_mask_path=tmp_path / "person.png",
+                face_mask_path=tmp_path / "face.png",
+                chest_mask_path=tmp_path / "chest.png",
+                lower_mask_path=tmp_path / "lower.png",
+                head_mask_path=tmp_path / "head.png",
+            )
+
+            self.assertEqual(bundle.face_source, "head-fallback")
+            self.assertIsNone(bundle.chest_mask)
+            self.assertIsNone(bundle.lower_mask)
+            self.assertTrue(np.any(bundle.face_mask))
+
+    def test_render_scene_bundle_uses_bubble_asset_override_keyword(self) -> None:
+        bundle = ScenePlacementBundle(scene_plans=[], composed_plans=[], evaluated_solution=None, debug_payload={})
+        config = RenderConfig(
+            font_path=None,
+            font_family=None,
+            bubble_asset=Path("/tmp/custom.svg"),
+            font_size=22,
+            text_renderer="resvg-hybrid",
+            bubble_renderer="resvg",
+            text_letter_spacing="-1px",
+            text_word_spacing="0",
+            resvg_tu_override=True,
+        )
+
+        with patch("bubble.render.render_bubbles") as render_bubbles:
+            render_scene_bundle(
+                image_path=Path("/tmp/input.png"),
+                output_path=Path("/tmp/output.png"),
+                bundle=bundle,
+                config=config,
+            )
+
+        _, kwargs = render_bubbles.call_args
+        self.assertEqual(kwargs["bubble_asset_override"], Path("/tmp/custom.svg"))
 
 
 if __name__ == "__main__":

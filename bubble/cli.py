@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from PIL import Image
 
 from bubble import __version__
 from bubble.assets import pick_font_path, resolve_bubble_asset
 from bubble.models import (
+    SceneBubblePlan,
     assignment_plans_payload,
     plans_payload,
     reflow_plans_payload,
@@ -22,13 +24,18 @@ from bubble.models import (
 )
 from bubble.scene_runtime import (
     LLMRoute,
+    MaskBundle,
     RenderConfig,
     compose_scene_bundle,
+    default_scene_planner,
     infer_scene_stage,
+    load_mask_bundle,
+    plan_scene,
     render_scene_bundle,
     resolve_scene_route,
     run_pipeline as run_scene_pipeline,
 )
+from bubble.scene_planners import resolve_scene_planner
 from bubble.validation import (
     load_assignment_plan_json,
     load_plan_json,
@@ -40,8 +47,11 @@ from bubble.worker_client import worker_request
 
 DEFAULT_SERVER = "http://127.0.0.1:8080/v1"
 DEFAULT_WORKER_MODE = "auto"
+DEFAULT_SCENE_PLANNER = default_scene_planner()
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Generate manga-style vertical speech bubbles.")
+experimental_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Experimental scene-placement tools.")
+app.add_typer(experimental_app, name="experimental")
 
 
 @dataclass
@@ -145,6 +155,19 @@ def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _scene_runtime_image_size(image_path: Path) -> tuple[int, int]:
+    return Image.open(image_path).size
+
+
+def load_scene_plan_json_from_payload_item(payload: dict[str, Any]) -> SceneBubblePlan:
+    return SceneBubblePlan(
+        bubble_id=str(payload["bubble_id"]),
+        anchor_x=float(payload["anchor_x"]),
+        anchor_y=float(payload["anchor_y"]),
+        sentence_ids=[int(item) for item in payload["sentence_ids"]],
+    )
+
+
 def _resolve_server(explicit: str | None) -> str:
     if explicit and explicit.strip():
         return explicit.strip()
@@ -195,6 +218,10 @@ def _validate_worker_mode(worker_mode: str) -> str:
     return normalized
 
 
+def _validate_scene_planner(planner: str) -> str:
+    return resolve_scene_planner(planner)
+
+
 def _validate_text_renderer(text_renderer: str) -> str:
     normalized = text_renderer.strip().lower()
     if normalized not in {"browser", "resvg-hybrid"}:
@@ -213,6 +240,28 @@ def _validate_reflow_workers(reflow_workers: int) -> int:
     if reflow_workers < 1:
         raise RuntimeError("reflow workers must be >= 1")
     return reflow_workers
+
+
+def _load_mask_bundle_for_planner(
+    *,
+    planner: str,
+    person_mask: Path | None,
+    face_mask: Path | None,
+    chest_mask: Path | None,
+    lower_mask: Path | None,
+    head_mask: Path | None,
+) -> MaskBundle | None:
+    if planner != "cp-sat":
+        return None
+    if person_mask is None or face_mask is None:
+        raise RuntimeError("cp-sat planner requires --person-mask and --face-mask")
+    return load_mask_bundle(
+        person_mask_path=person_mask,
+        face_mask_path=face_mask,
+        chest_mask_path=chest_mask,
+        lower_mask_path=lower_mask,
+        head_mask_path=head_mask,
+    )
 
 
 def _validate_evaluate_stage(stage: str) -> str:
@@ -239,7 +288,7 @@ def _render_config(
     resvg_tu_override: bool,
 ) -> RenderConfig:
     resolved_bubble_asset = resolve_bubble_asset(str(bubble_asset) if bubble_asset is not None else None)
-    if resolved_bubble_asset is None:
+    if bubble_asset is not None and resolved_bubble_asset is None:
         raise RuntimeError(f"bubble asset not found: {bubble_asset}")
     return RenderConfig(
         font_path=pick_font_path(str(font) if font is not None else None),
@@ -336,11 +385,18 @@ def scene(
     ctx: typer.Context,
     input_path: Path | None = typer.Option(None, "--input", "-i", help="Input image path."),
     dialogue: str | None = typer.Option(None, "--dialogue", "-d", help="Dialogue text. Defaults to workspace metadata."),
+    planner: str = typer.Option(DEFAULT_SCENE_PLANNER, "--planner", help="Scene planner: cp-sat or llm."),
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
     scene_server: str | None = typer.Option(None, "--scene-server", help="Override scene-stage llama-server API base URL."),
     scene_model: str | None = typer.Option(None, "--scene-model", help="Override scene-stage model alias."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
+    person_mask: Path | None = typer.Option(None, "--person-mask", help="Person mask path for cp-sat planner."),
+    face_mask: Path | None = typer.Option(None, "--face-mask", help="Face mask path for cp-sat planner."),
+    chest_mask: Path | None = typer.Option(None, "--chest-mask", help="Optional chest mask path."),
+    lower_mask: Path | None = typer.Option(None, "--lower-mask", help="Optional lower-body mask path."),
+    head_mask: Path | None = typer.Option(None, "--head-mask", help="Optional head mask path used as face fallback."),
+    font_size: int = typer.Option(0, "--font-size", help="Font size for scene evaluation/planning."),
     use_worker: str = typer.Option(DEFAULT_WORKER_MODE, "--use-worker", help="Worker mode: auto, on, or off."),
 ) -> None:
     state: AppState = ctx.obj
@@ -350,6 +406,7 @@ def scene(
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
         resolved_server = _resolve_server(server)
+        resolved_planner = _validate_scene_planner(planner)
         worker_mode = _validate_worker_mode(use_worker)
         scene_route = resolve_scene_route(
             default_server=resolved_server,
@@ -357,44 +414,114 @@ def scene(
             scene_server=scene_server,
             scene_model=scene_model,
         )
-        _log(state, f"running scene via {scene_route.server}")
-        response = worker_request(
-            "scene_stage",
-            {
-                "image_path": str(image_path),
-                "dialogue_lines": dialogue_lines,
-                "server": resolved_server,
-                "model": model,
-                "scene_server": scene_server,
-                "scene_model": scene_model,
-                "temperature": temperature,
-                "output_scene_path": str(files.scene),
-            },
-            mode=worker_mode,
-        )
-        if response is None:
-            _, plans = infer_scene_stage(
-                image_path=image_path,
-                dialogue_lines=dialogue_lines,
-                route=scene_route,
-                temperature=temperature,
+        if resolved_planner == "cp-sat":
+            if not files.reflow.exists():
+                raise RuntimeError(f"reflow plan JSON not found: {files.reflow}")
+            _, reflow_plans = load_reflow_plan_json(files.reflow)
+            masks = _load_mask_bundle_for_planner(
+                planner=resolved_planner,
+                person_mask=person_mask,
+                face_mask=face_mask,
+                chest_mask=chest_mask,
+                lower_mask=lower_mask,
+                head_mask=head_mask,
             )
-            save_scene_plan_json(files.scene, dialogue_lines, plans)
-            payload = {
-                "stage": "scene",
-                "workspace": str(state.workspace),
-                "output_file": str(files.scene),
-                "server": scene_route.server,
-                "model": scene_route.model,
-                **scene_plans_payload(dialogue_lines, plans),
-            }
+            _log(state, "running scene planner cp-sat")
+            response = worker_request(
+                "solve_cp_sat_scene",
+                {
+                    "image_path": str(image_path),
+                    "reflow_path": str(files.reflow),
+                    "person_mask": str(person_mask) if person_mask is not None else None,
+                    "face_mask": str(face_mask) if face_mask is not None else None,
+                    "chest_mask": str(chest_mask) if chest_mask is not None else None,
+                    "lower_mask": str(lower_mask) if lower_mask is not None else None,
+                    "head_mask": str(head_mask) if head_mask is not None else None,
+                    "font_size": font_size,
+                },
+                mode=worker_mode,
+            )
+            if response is None:
+                image_width, image_height = _scene_runtime_image_size(image_path)
+                bundle = plan_scene(
+                    planner=resolved_planner,
+                    image_path=image_path,
+                    dialogue_lines=dialogue_lines,
+                    reflow_plans=reflow_plans,
+                    route=scene_route,
+                    temperature=temperature,
+                    image_width=image_width,
+                    image_height=image_height,
+                    masks=masks,
+                    font_size=font_size,
+                )
+                save_scene_plan_json(files.scene, dialogue_lines, bundle.scene_plans)
+                payload = {
+                    "stage": "scene",
+                    "workspace": str(state.workspace),
+                    "planner": resolved_planner,
+                    "output_file": str(files.scene),
+                    "font_size": font_size,
+                    **scene_plans_payload(dialogue_lines, bundle.scene_plans),
+                }
+            else:
+                save_scene_plan_json(
+                    files.scene,
+                    dialogue_lines,
+                    [
+                        load_scene_plan_json_from_payload_item(item)
+                        for item in list(response["scene"])
+                    ],
+                )
+                payload = {
+                    "stage": "scene",
+                    "workspace": str(state.workspace),
+                    "planner": resolved_planner,
+                    "output_file": str(files.scene),
+                    **{key: value for key, value in response.items() if key != "status"},
+                }
+                _, plans = load_scene_plan_json(files.scene)
         else:
-            payload = {
-                "stage": "scene",
-                "workspace": str(state.workspace),
-                **{key: value for key, value in response.items() if key != "status"},
-            }
-            _, plans = load_scene_plan_json(files.scene)
+            _log(state, f"running scene via {scene_route.server}")
+            response = worker_request(
+                "scene_stage",
+                {
+                    "image_path": str(image_path),
+                    "dialogue_lines": dialogue_lines,
+                    "server": resolved_server,
+                    "model": model,
+                    "scene_server": scene_server,
+                    "scene_model": scene_model,
+                    "temperature": temperature,
+                    "output_scene_path": str(files.scene),
+                },
+                mode=worker_mode,
+            )
+            if response is None:
+                _, plans = infer_scene_stage(
+                    image_path=image_path,
+                    dialogue_lines=dialogue_lines,
+                    route=scene_route,
+                    temperature=temperature,
+                )
+                save_scene_plan_json(files.scene, dialogue_lines, plans)
+                payload = {
+                    "stage": "scene",
+                    "workspace": str(state.workspace),
+                    "planner": resolved_planner,
+                    "output_file": str(files.scene),
+                    "server": scene_route.server,
+                    "model": scene_route.model,
+                    **scene_plans_payload(dialogue_lines, plans),
+                }
+            else:
+                payload = {
+                    "stage": "scene",
+                    "workspace": str(state.workspace),
+                    "planner": resolved_planner,
+                    **{key: value for key, value in response.items() if key != "status"},
+                }
+                _, plans = load_scene_plan_json(files.scene)
         metadata["dialogue_lines"] = dialogue_lines
         metadata["input_image"] = str(image_path)
         _save_metadata(files.metadata, metadata)
@@ -635,11 +762,17 @@ def run(
     output_path: Path = typer.Option(..., "--output", "-o", help="Output image path."),
     input_path: Path | None = typer.Option(None, "--input", "-i", help="Input image path."),
     dialogue: str | None = typer.Option(None, "--dialogue", "-d", help="Dialogue text. Defaults to workspace metadata."),
+    planner: str = typer.Option(DEFAULT_SCENE_PLANNER, "--planner", help="Scene planner: cp-sat or llm."),
     server: str | None = typer.Option(None, "--server", "-s", help="llama-server API base URL."),
     model: str = typer.Option("heretic", "--model", "-m", help="Model alias exposed by llama-server."),
     scene_server: str | None = typer.Option(None, "--scene-server", help="Override scene-stage llama-server API base URL."),
     scene_model: str | None = typer.Option(None, "--scene-model", help="Override scene-stage model alias."),
     temperature: float = typer.Option(0.0, "--temperature", "-t", help="Sampling temperature."),
+    person_mask: Path | None = typer.Option(None, "--person-mask", help="Person mask path for cp-sat planner."),
+    face_mask: Path | None = typer.Option(None, "--face-mask", help="Face mask path for cp-sat planner."),
+    chest_mask: Path | None = typer.Option(None, "--chest-mask", help="Optional chest mask path."),
+    lower_mask: Path | None = typer.Option(None, "--lower-mask", help="Optional lower-body mask path."),
+    head_mask: Path | None = typer.Option(None, "--head-mask", help="Optional head mask path used as face fallback."),
     font: Path | None = typer.Option(None, "--font", help="Font file path."),
     font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
     bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Override bubble asset path for all bubble types."),
@@ -667,11 +800,20 @@ def run(
         dialogue_lines = _resolve_dialogue_lines(dialogue, metadata)
         image_path = _resolve_input_path(input_path, metadata)
         resolved_server = _resolve_server(server)
+        resolved_planner = _validate_scene_planner(planner)
         scene_route = resolve_scene_route(
             default_server=resolved_server,
             default_model=model,
             scene_server=scene_server,
             scene_model=scene_model,
+        )
+        masks = _load_mask_bundle_for_planner(
+            planner=resolved_planner,
+            person_mask=person_mask,
+            face_mask=face_mask,
+            chest_mask=chest_mask,
+            lower_mask=lower_mask,
+            head_mask=head_mask,
         )
         render_config = _render_config(
             font=font,
@@ -691,10 +833,16 @@ def run(
                 "dialogue_lines": dialogue_lines,
                 "server": resolved_server,
                 "model": model,
+                "planner": resolved_planner,
                 "scene_server": scene_server,
                 "scene_model": scene_model,
                 "temperature": temperature,
                 "reflow_workers": validated_reflow_workers,
+                "person_mask": str(person_mask) if person_mask is not None else None,
+                "face_mask": str(face_mask) if face_mask is not None else None,
+                "chest_mask": str(chest_mask) if chest_mask is not None else None,
+                "lower_mask": str(lower_mask) if lower_mask is not None else None,
+                "head_mask": str(head_mask) if head_mask is not None else None,
                 "font": str(font) if font is not None else None,
                 "font_family": font_family,
                 "bubble_asset": str(bubble_asset) if bubble_asset is not None else None,
@@ -713,6 +861,7 @@ def run(
             mode=worker_mode,
         )
         if response is None:
+            image_width, image_height = _scene_runtime_image_size(image_path)
             result = run_scene_pipeline(
                 image_path=image_path,
                 dialogue_lines=dialogue_lines,
@@ -720,13 +869,10 @@ def run(
                 scene_route=scene_route,
                 temperature=temperature,
                 reflow_workers=validated_reflow_workers,
-                image_width=0,
-                image_height=0,
-                face_mask=None,
-                person_mask=None,
-                chest_mask=None,
-                lower_mask=None,
-                head_mask=None,
+                image_width=image_width,
+                image_height=image_height,
+                planner=resolved_planner,
+                masks=masks,
                 font_size=font_size,
             )
             save_assignment_plan_json(files.assignment, dialogue_lines, result.assignment_plans)
@@ -745,6 +891,7 @@ def run(
                 "stage": "run",
                 "workspace": str(state.workspace),
                 "output_file": str(output_path),
+                "planner": resolved_planner,
                 "assignment_file": str(files.assignment),
                 "reflow_file": str(files.reflow),
                 "scene_file": str(files.scene),
@@ -766,6 +913,7 @@ def run(
             payload = {
                 "stage": "run",
                 "workspace": str(state.workspace),
+                "planner": resolved_planner,
                 "text_renderer": validated_text_renderer,
                 "bubble_renderer": validated_bubble_renderer,
                 "text_letter_spacing": text_letter_spacing,
@@ -779,6 +927,108 @@ def run(
         _emit_success(state, payload, f"run completed: {output_path}")
     except Exception as exc:  # noqa: BLE001
         _emit_error(state, exc)
+
+
+@experimental_app.command("place-from-masks")
+def experimental_place_from_masks(
+    image: Path = typer.Option(..., "--image", help="Input image path."),
+    reflow_json: Path = typer.Option(..., "--reflow-json", help="Reflow JSON path."),
+    face_mask: Path = typer.Option(..., "--face-mask", help="Face mask path."),
+    person_mask: Path = typer.Option(..., "--person-mask", help="Person mask path."),
+    chest_mask: Path | None = typer.Option(None, "--chest-mask", help="Optional chest mask path."),
+    lower_mask: Path | None = typer.Option(None, "--lower-mask", help="Optional lower-body mask path."),
+    head_mask: Path | None = typer.Option(None, "--head-mask", help="Optional head mask path."),
+    solver: str = typer.Option("beam", "--solver", help="Placement solver."),
+    planner_mode: str = typer.Option("solver", "--planner-mode", help="Experimental planner mode."),
+    out_dir: Path = typer.Option(..., "--out-dir", help="Output directory."),
+    font_size: int = typer.Option(0, "--font-size", help="Font size override."),
+    render_output: Path | None = typer.Option(None, "--render-output", help="Optional final render output."),
+    font: Path | None = typer.Option(None, "--font", help="Font file path."),
+    font_family: str | None = typer.Option(None, "--font-family", help="CSS font-family override."),
+    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Override bubble asset path."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer backend."),
+    bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer backend."),
+    text_letter_spacing: str = typer.Option("-1px", "--text-letter-spacing", help="Letter spacing."),
+    text_word_spacing: str = typer.Option("0", "--text-word-spacing", help="Word spacing."),
+    resvg_tu_override: bool = typer.Option(True, "--resvg-tu-override/--no-resvg-tu-override"),
+    use_worker: str = typer.Option(DEFAULT_WORKER_MODE, "--use-worker", help="Worker mode."),
+) -> None:
+    from bubble.experimental import poc_scene_place_from_masks
+
+    argv = [
+        "--image", str(image),
+        "--reflow-json", str(reflow_json),
+        "--face-mask", str(face_mask),
+        "--person-mask", str(person_mask),
+        "--solver", solver,
+        "--planner-mode", planner_mode,
+        "--out-dir", str(out_dir),
+        "--font-size", str(font_size),
+        "--text-renderer", text_renderer,
+        "--bubble-renderer", bubble_renderer,
+        "--text-letter-spacing", text_letter_spacing,
+        "--text-word-spacing", text_word_spacing,
+        "--use-worker", _validate_worker_mode(use_worker),
+    ]
+    if chest_mask is not None:
+        argv.extend(["--chest-mask", str(chest_mask)])
+    if lower_mask is not None:
+        argv.extend(["--lower-mask", str(lower_mask)])
+    if head_mask is not None:
+        argv.extend(["--head-mask", str(head_mask)])
+    if render_output is not None:
+        argv.extend(["--render-output", str(render_output)])
+    if font is not None:
+        argv.extend(["--font", str(font)])
+    if font_family is not None:
+        argv.extend(["--font-family", font_family])
+    if bubble_asset is not None:
+        argv.extend(["--bubble-asset", str(bubble_asset)])
+    if resvg_tu_override:
+        argv.append("--resvg-tu-override")
+    else:
+        argv.append("--no-resvg-tu-override")
+    raise typer.Exit(code=poc_scene_place_from_masks.main(argv))
+
+
+@experimental_app.command("batch-place")
+def experimental_batch_place(
+    images: list[str] = typer.Option(["test", "test1", "test2", "test3", "test4"], "--images", help="Image stems."),
+    dialogues: list[int] = typer.Option([1, 2, 3, 4, 5], "--dialogues", help="Dialogue indices."),
+    mask_root: Path = typer.Option(
+        Path("/mnt/c/Users/inada/obsidian/base/03_projects/comfy-agent/outputs/bboxseg_masks_test_to_test4_20260310_180344"),
+        "--mask-root",
+        help="Mask root directory.",
+    ),
+    reflow_root: Path = typer.Option(Path("out/font22_dialogue_series"), "--reflow-root", help="Reflow root."),
+    out_root: Path = typer.Option(Path("out/font22_cp_sat_iter"), "--out-root", help="Output root."),
+    font_size: int = typer.Option(22, "--font-size", help="Font size."),
+    text_renderer: str = typer.Option("resvg-hybrid", "--text-renderer", help="Text renderer."),
+    bubble_renderer: str = typer.Option("resvg", "--bubble-renderer", help="Bubble renderer."),
+    bubble_asset: Path | None = typer.Option(None, "--bubble-asset", help="Optional bubble asset."),
+    planner_mode: str = typer.Option("cp-sat", "--planner-mode", help="Experimental planner mode."),
+    use_worker: str = typer.Option("off", "--use-worker", help="Worker mode."),
+    jobs: int = typer.Option(1, "--jobs", help="Parallel jobs."),
+) -> None:
+    from bubble.experimental import batch_place
+
+    argv: list[str] = ["--images", *images, "--dialogues", *[str(dialogue) for dialogue in dialogues]]
+    argv.extend(
+        [
+            "--mask-root", str(mask_root),
+            "--reflow-root", str(reflow_root),
+            "--out-root", str(out_root),
+            "--font-size", str(font_size),
+            "--text-renderer", text_renderer,
+            "--bubble-renderer", bubble_renderer,
+            "--planner-mode", planner_mode,
+            "--use-worker", _validate_worker_mode(use_worker),
+            "--jobs", str(jobs),
+        ]
+    )
+    if bubble_asset is not None:
+        argv.extend(["--bubble-asset", str(bubble_asset)])
+    raise typer.Exit(code=batch_place.main(argv))
 
 
 @app.command()

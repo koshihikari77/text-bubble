@@ -78,6 +78,7 @@ apt-get install -y resvg
 - `render/run/full` の `--bubble-asset` は全吹き出しタイプに対する override
 - `resvg-hybrid` の調整は `--text-letter-spacing`（既定 `-1px`）, `--text-word-spacing`（既定 `0`）, `--resvg-tu-override/--no-resvg-tu-override`
 - `reflow/run` は `--reflow-workers` で並列度を指定（デフォルト `4`）
+- `scene/run` は `--planner cp-sat|llm` を持ち、デフォルトは `cp-sat`
 
 吹き出しタイプ:
 
@@ -93,7 +94,9 @@ apt-get install -y resvg
 ```bash
 text-bubble -w out/run1 assign --dialogue "夜見のどこみてるのー？"
 text-bubble -w out/run1 reflow
-text-bubble -w out/run1 scene  -i imgs/00005716.png
+text-bubble -w out/run1 scene  -i imgs/00005716.png \
+  --person-mask masks/00005716_person_mask.png \
+  --face-mask masks/00005716_face_mask.png
 text-bubble -w out/run1 render -o out/result.png
 ```
 
@@ -106,8 +109,18 @@ text-bubble -w out/run1 render -o out/result.png
 text-bubble -w out/run1 run \
   -i imgs/00005716.png \
   -o out/result.png \
+  --person-mask masks/00005716_person_mask.png \
+  --face-mask masks/00005716_face_mask.png \
   --dialogue "夜見のどこみてるのー？"
 ```
+
+`cp-sat` planner の mask policy:
+
+- `--person-mask`, `--face-mask` は必須
+- `--chest-mask`, `--lower-mask`, `--head-mask` は任意
+- `chest/lower/head` が空なら自動で未指定扱い
+- `face` が空で `head` が有効なら `head` を face fallback として使う
+- `face` も `head` も空ならエラー
 
 一括実行（`full` 1-shot 推論）:
 
@@ -134,13 +147,32 @@ text-bubble -w out/run1 evaluate \
 - `scene/run/render` は `--use-worker auto|on|off` でローカル worker 経由の実行を切り替えられる。
 - 速度面の最適化 TODO は `docs/ideas/render_perf_todo.md` を参照。
 
-## Scene Placement PoC
+## Experimental CLI
 
-`scripts/poc_scene_place_from_masks.py` を起点に、`reflow.json + image + body masks` から `scene.json -> rendered.png` を作る PoC を持っています。  
-PoC では `beam`, `cp-sat`, `cp-sat-codex`, `codex-first` を試せますが、2026-03-13 時点では `Codex` 系はまだ experimental で、品質は安定していません。  
-本線として見るべきなのは、幾何制約ベースの `cp-sat` と、その runtime/worker 整理です。
-`planner-mode=cp-sat` では Codex 用の `codex_board.png` / `editable_scene_template.json` / `prompt_context.json` は生成しません。
-`scripts/run_cp_sat_batch.py` は `--jobs N` で batch を並列化でき、`--jobs 1` では subprocess を使わず同一 Python プロセス内で PoC を直接実行します。
+PoC 系の入口は `scripts/` ではなく `text-bubble experimental ...` に寄せています。
+
+単発の mask-based placement:
+
+```bash
+text-bubble experimental place-from-masks \
+  --image imgs/test.png \
+  --reflow-json out/font22_dialogue_series/dialogue5/reflow.json \
+  --person-mask ../comfy-agent/outputs/.../test_person_mask.png \
+  --face-mask ../comfy-agent/outputs/.../test_face_mask.png \
+  --out-dir out/poc_case
+```
+
+batch 実行:
+
+```bash
+text-bubble experimental batch-place \
+  --images test test1 test2 test3 test4 \
+  --dialogues 1 2 3 4 5 \
+  --out-root out/font22_cp_sat_iter
+```
+
+experimental planner では `beam`, `cp-sat`, `cp-sat-codex`, `codex-first` を試せますが、本線の official planner は `cp-sat` と `llm` です。  
+Scene placement の設計経緯は `docs/ideas/scene_placement_poc_log.md` を参照してください。
 
 ## 旧CLI
 
