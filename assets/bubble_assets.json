@@ -3,6 +3,7 @@
   "types": {
     "ellipse": {
       "kind": "procedural",
+      "stroke_width": 2.0,
       "generator": "ellipse_panel",
       "safe_padding": {
         "left": 1.6,
@@ -13,11 +14,12 @@
     },
     "narration": {
       "kind": "procedural",
+      "stroke_width": 2.0,
       "generator": "rect_panel"
     },
     "shout": {
       "kind": "procedural",
-      "stroke_width": 2.3,
+      "stroke_width": 2.0,
       "generator": "pointed_rect_kink_panel",
       "safe_padding": {
         "left": 0.4,
@@ -51,7 +53,7 @@
     },
     "shout_polygon": {
       "kind": "procedural",
-      "stroke_width": 2.5,
+      "stroke_width": 2.0,
       "generator": "polygon_shout_panel",
       "params": {
         "view_box": [50, 50, 420, 660],
@@ -69,7 +71,7 @@
     },
     "shout_rect": {
       "kind": "procedural",
-      "stroke_width": 2.3,
+      "stroke_width": 2.0,
       "generator": "bowed_rect_panel",
       "params": {
         "view_box": [0, 0, 360, 600],
@@ -82,7 +84,7 @@
     },
     "shout_rect_pointed": {
       "kind": "procedural",
-      "stroke_width": 2.3,
+      "stroke_width": 2.0,
       "generator": "pointed_rect_panel",
       "safe_padding": {
         "left": 0.4,
@@ -116,7 +118,7 @@
     },
     "shout_rect_pointed_drop": {
       "kind": "procedural",
-      "stroke_width": 2.3,
+      "stroke_width": 2.0,
       "generator": "pointed_rect_drop_panel",
       "safe_padding": {
         "left": 0.4,
