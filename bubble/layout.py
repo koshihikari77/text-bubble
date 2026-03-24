@@ -60,13 +60,13 @@ def _clamp_direct_corner(
 ) -> tuple[float, float]:
     x, y = point
     if "left" in orientation:
-        x = min(x, text_left - clear_x)
+        x = min(x, text_left)
     else:
-        x = max(x, text_right + clear_x)
+        x = max(x, text_right)
     if "top" in orientation:
-        y = min(y, text_top - clear_y)
+        y = min(y, text_top)
     else:
-        y = max(y, text_bottom + clear_y)
+        y = max(y, text_bottom)
     return _clamp(x, 2.0, bubble_width - 2.0), _clamp(y, 2.0, bubble_height - 2.0)
 
 
@@ -112,11 +112,11 @@ def _edge_midpoints_direct(
                 y += rng.uniform(-depth_jitter, depth_jitter)
             x = _clamp(x, min(start[0], end[0]) + clear_x, max(start[0], end[0]) - clear_x)
             if edge == "top":
-                y = min(y, text_top - clear_y)
-                y = max(y, min(start[1], end[1]) + clear_y * 0.5)
+                y = min(y, text_top)
+                y = max(y, min(start[1], end[1]))
             else:
-                y = max(y, text_bottom + clear_y)
-                y = min(y, max(start[1], end[1]) - clear_y * 0.5)
+                y = max(y, text_bottom)
+                y = min(y, max(start[1], end[1]))
             points.append((x, y))
         else:
             x = inset_value
@@ -126,11 +126,11 @@ def _edge_midpoints_direct(
                 y += rng.uniform(-tangent_jitter, tangent_jitter)
             y = _clamp(y, min(start[1], end[1]) + clear_y, max(start[1], end[1]) - clear_y)
             if edge == "left":
-                x = min(x, text_left - clear_x)
-                x = max(x, min(start[0], end[0]) + clear_x * 0.5)
+                x = min(x, text_left)
+                x = max(x, min(start[0], end[0]))
             else:
-                x = max(x, text_right + clear_x)
-                x = min(x, max(start[0], end[0]) - clear_x * 0.5)
+                x = max(x, text_right)
+                x = min(x, max(start[0], end[0]))
             points.append((x, y))
     return points
 
@@ -179,11 +179,15 @@ def _edge_midpoints_anchored(
                 y += rng.uniform(-depth_jitter, depth_jitter)
             x = _clamp(x, min(start[0], end[0]) + clear_x, max(start[0], end[0]) - clear_x)
             if edge == "top":
-                y = min(y, text_top - clear_y)
-                y = max(y, min(start[1], end[1]) + clear_y * 0.5)
+                outer_y = min(start[1], end[1])
+                midpoint_limit = outer_y + (text_top - outer_y) * 0.5
+                y = min(y, midpoint_limit)
+                y = max(y, outer_y)
             else:
-                y = max(y, text_bottom + clear_y)
-                y = min(y, max(start[1], end[1]) - clear_y * 0.5)
+                outer_y = max(start[1], end[1])
+                midpoint_limit = text_bottom + (outer_y - text_bottom) * 0.5
+                y = max(y, midpoint_limit)
+                y = min(y, outer_y)
             points.append((x, y))
         else:
             x = inset_anchor[0]
@@ -193,11 +197,15 @@ def _edge_midpoints_anchored(
                 y += rng.uniform(-tangent_jitter, tangent_jitter)
             y = _clamp(y, min(start[1], end[1]) + clear_y, max(start[1], end[1]) - clear_y)
             if edge == "left":
-                x = min(x, text_left - clear_x)
-                x = max(x, min(start[0], end[0]) + clear_x * 0.5)
+                outer_x = min(start[0], end[0])
+                midpoint_limit = outer_x + (text_left - outer_x) * 0.5
+                x = min(x, midpoint_limit)
+                x = max(x, outer_x)
             else:
-                x = max(x, text_right + clear_x)
-                x = min(x, max(start[0], end[0]) - clear_x * 0.5)
+                outer_x = max(start[0], end[0])
+                midpoint_limit = text_right + (outer_x - text_right) * 0.5
+                x = max(x, midpoint_limit)
+                x = min(x, outer_x)
             points.append((x, y))
     return points
 
@@ -219,12 +227,65 @@ def _segment_control_point(
     return control_x, control_y
 
 
+def _bias_kink_control_toward_midpoint(
+    *,
+    edge: str,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    control: tuple[float, float],
+    start_is_midpoint: bool,
+    end_is_midpoint: bool,
+) -> tuple[float, float]:
+    if start_is_midpoint == end_is_midpoint:
+        return control
+    x, y = control
+    midpoint = start if start_is_midpoint else end
+    if edge in {"top", "bottom"}:
+        bias = 0.90 if end_is_midpoint else 0.10
+        x = start[0] * (1.0 - bias) + end[0] * bias
+        return x, y
+    bias = 0.90 if end_is_midpoint else 0.10
+    y = start[1] * (1.0 - bias) + end[1] * bias
+    return x, y
+
+
+def _overshoot_kink_control_past_midpoint(
+    *,
+    edge: str,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    control: tuple[float, float],
+    start_is_midpoint: bool,
+    end_is_midpoint: bool,
+    entering_overshoot_ratio: float = 0.18,
+    leaving_overshoot_ratio: float = 0.34,
+) -> tuple[float, float]:
+    if start_is_midpoint == end_is_midpoint:
+        return control
+    x, y = control
+    if edge in {"top", "bottom"}:
+        midpoint = end if end_is_midpoint else start
+        span = abs(end[0] - start[0])
+        overshoot = span * (entering_overshoot_ratio if end_is_midpoint else leaving_overshoot_ratio)
+        direction = 1.0 if edge == "top" else -1.0
+        x = midpoint[0] + direction * overshoot
+        return x, y
+    midpoint = end if end_is_midpoint else start
+    span = abs(end[1] - start[1])
+    overshoot = span * (entering_overshoot_ratio if end_is_midpoint else leaving_overshoot_ratio)
+    direction = 1.0 if edge == "right" else -1.0
+    y = midpoint[1] + direction * overshoot
+    return x, y
+
+
 def _clamp_direct_control_point(
     control: tuple[float, float],
     *,
     edge: str,
     start: tuple[float, float],
     end: tuple[float, float],
+    start_is_midpoint: bool = False,
+    end_is_midpoint: bool = False,
     text_left: float,
     text_top: float,
     text_right: float,
@@ -236,21 +297,45 @@ def _clamp_direct_control_point(
 ) -> tuple[float, float]:
     x, y = control
     if edge == "top":
-        x = _clamp(x, min(start[0], end[0]) + clear_x * 0.25, max(start[0], end[0]) - clear_x * 0.25)
-        y = min(y, text_top - clear_y)
-        y = max(y, min(start[1], end[1]) + clear_y * 0.5)
+        lower = min(start[0], end[0]) + clear_x * 0.25
+        upper = max(start[0], end[0]) - clear_x * 0.25
+        span = abs(end[0] - start[0])
+        extra = span * 0.35
+        if start_is_midpoint or end_is_midpoint:
+            upper += extra
+        x = _clamp(x, lower, upper)
+        y = min(y, text_top)
+        y = max(y, min(start[1], end[1]))
     elif edge == "bottom":
-        x = _clamp(x, min(start[0], end[0]) + clear_x * 0.25, max(start[0], end[0]) - clear_x * 0.25)
-        y = max(y, text_bottom + clear_y)
-        y = min(y, max(start[1], end[1]) - clear_y * 0.5)
+        lower = min(start[0], end[0]) + clear_x * 0.25
+        upper = max(start[0], end[0]) - clear_x * 0.25
+        span = abs(end[0] - start[0])
+        extra = span * 0.35
+        if start_is_midpoint or end_is_midpoint:
+            lower -= extra
+        x = _clamp(x, lower, upper)
+        y = max(y, text_bottom)
+        y = min(y, max(start[1], end[1]))
     elif edge == "left":
-        y = _clamp(y, min(start[1], end[1]) + clear_y * 0.25, max(start[1], end[1]) - clear_y * 0.25)
-        x = min(x, text_left - clear_x)
-        x = max(x, min(start[0], end[0]) + clear_x * 0.35)
+        lower = min(start[1], end[1]) + clear_y * 0.25
+        upper = max(start[1], end[1]) - clear_y * 0.25
+        span = abs(end[1] - start[1])
+        extra = span * 0.35
+        if start_is_midpoint or end_is_midpoint:
+            lower -= extra
+        y = _clamp(y, lower, upper)
+        x = min(x, text_left)
+        x = max(x, min(start[0], end[0]))
     else:
-        y = _clamp(y, min(start[1], end[1]) + clear_y * 0.25, max(start[1], end[1]) - clear_y * 0.25)
-        x = max(x, text_right + clear_x)
-        x = min(x, max(start[0], end[0]) - clear_x * 0.35)
+        lower = min(start[1], end[1]) + clear_y * 0.25
+        upper = max(start[1], end[1]) - clear_y * 0.25
+        span = abs(end[1] - start[1])
+        extra = span * 0.35
+        if start_is_midpoint or end_is_midpoint:
+            upper += extra
+        y = _clamp(y, lower, upper)
+        x = max(x, text_right)
+        x = min(x, max(start[0], end[0]))
     return _clamp(x, 2.0, bubble_width - 2.0), _clamp(y, 2.0, bubble_height - 2.0)
 
 
@@ -258,28 +343,28 @@ def _shout_rect_variant_spec(bubble_type: str) -> dict[str, float | str]:
     if bubble_type == "shout_rect_pointed":
         return {
             "curve_style": "smooth",
-            "frame_pad_x_ratio": 0.52,
-            "frame_pad_top_ratio": 0.88,
-            "frame_pad_bottom_ratio": 0.62,
-            "vertical_inward_ratio": 0.56,
+            "frame_pad_x_ratio": 0.76,
+            "frame_pad_top_ratio": 1.36,
+            "frame_pad_bottom_ratio": 1.10,
+            "vertical_inward_ratio": 0.30,
             "side_inward_ratio": 0.46,
         }
     if bubble_type == "shout_rect_pointed_drop":
         return {
             "curve_style": "kinked",
-            "frame_pad_x_ratio": 0.44,
-            "frame_pad_top_ratio": 0.96,
-            "frame_pad_bottom_ratio": 0.58,
-            "vertical_inward_ratio": 0.92,
-            "side_inward_ratio": 0.64,
+            "frame_pad_x_ratio": 0.70,
+            "frame_pad_top_ratio": 1.62,
+            "frame_pad_bottom_ratio": 1.24,
+            "vertical_inward_ratio": 0.30,
+            "side_inward_ratio": 0.52,
         }
     return {
         "curve_style": "kinked",
-        "frame_pad_x_ratio": 0.46,
-        "frame_pad_top_ratio": 1.00,
-        "frame_pad_bottom_ratio": 0.60,
-        "vertical_inward_ratio": 0.88,
-        "side_inward_ratio": 0.70,
+        "frame_pad_x_ratio": 0.72,
+        "frame_pad_top_ratio": 1.68,
+        "frame_pad_bottom_ratio": 1.28,
+        "vertical_inward_ratio": 0.30,
+        "side_inward_ratio": 0.54,
     }
 
 
@@ -315,15 +400,15 @@ def _frame_inset_anchor(
     inward_ratio: float,
 ) -> tuple[float, float]:
     if edge == "top":
-        limit = keepout_top - clear_y
+        limit = keepout_top
         return ((frame_left + frame_right) * 0.5, frame_top + (limit - frame_top) * inward_ratio)
     if edge == "bottom":
-        limit = keepout_bottom + clear_y
+        limit = keepout_bottom
         return ((frame_left + frame_right) * 0.5, frame_bottom - (frame_bottom - limit) * inward_ratio)
     if edge == "left":
-        limit = keepout_left - clear_x
+        limit = keepout_left
         return (frame_left + (limit - frame_left) * inward_ratio, (frame_top + frame_bottom) * 0.5)
-    limit = keepout_right + clear_x
+    limit = keepout_right
     return (frame_right - (frame_right - limit) * inward_ratio, (frame_top + frame_bottom) * 0.5)
 
 
@@ -347,6 +432,7 @@ def compute_shout_rect_layout(
     bubble_width: int,
     bubble_height: int,
     text_bbox_local: tuple[int, int, int, int],
+    bubble_box_local: tuple[int, int, int, int],
     font_size: int,
     variant_seed: int | None,
     bubble_params: dict[str, Any] | None,
@@ -358,6 +444,10 @@ def compute_shout_rect_layout(
     text_top = float(text_bbox_local[1])
     text_right = float(text_bbox_local[2])
     text_bottom = float(text_bbox_local[3])
+    bubble_box_left = float(bubble_box_local[0])
+    bubble_box_top = float(bubble_box_local[1])
+    bubble_box_right = float(bubble_box_local[2])
+    bubble_box_bottom = float(bubble_box_local[3])
     params.update(
         {
             "bubble_width": bubble_width_f,
@@ -382,24 +472,16 @@ def compute_shout_rect_layout(
     variant = _shout_rect_variant_spec(bubble_type)
     curve_style = str(variant["curve_style"])
 
-    outer_left_gap = text_left
-    outer_right_gap = bubble_width_f - text_right
-    outer_top_gap = text_top
-    outer_bottom_gap = bubble_height_f - text_bottom
-    text_margin_x = max(6.0, float(font_size) * 0.45)
-    text_margin_y = max(6.0, float(font_size) * 0.45)
-    keepout_left = max(2.0, text_left - min(text_margin_x, max(0.0, outer_left_gap - 2.0)))
-    keepout_right = min(
-        bubble_width_f - 2.0,
-        text_right + min(text_margin_x, max(0.0, outer_right_gap - 2.0)),
-    )
-    keepout_top = max(2.0, text_top - min(text_margin_y, max(0.0, outer_top_gap - 2.0)))
-    keepout_bottom = min(
-        bubble_height_f - 2.0,
-        text_bottom + min(text_margin_y, max(0.0, outer_bottom_gap - 2.0)),
-    )
-    clear_x = max(2.0, float(font_size) * 0.08)
-    clear_y = max(2.0, float(font_size) * 0.08)
+    keepout_left = bubble_box_left
+    keepout_right = bubble_box_right
+    keepout_top = bubble_box_top
+    keepout_bottom = bubble_box_bottom
+    outer_left_gap = keepout_left
+    outer_right_gap = bubble_width_f - keepout_right
+    outer_top_gap = keepout_top
+    outer_bottom_gap = bubble_height_f - keepout_bottom
+    clear_x = 0.0
+    clear_y = 0.0
     frame_pad_x = float(font_size) * float(variant["frame_pad_x_ratio"])
     frame_pad_top = float(font_size) * float(variant["frame_pad_top_ratio"])
     frame_pad_bottom = float(font_size) * float(variant["frame_pad_bottom_ratio"])
@@ -409,14 +491,14 @@ def compute_shout_rect_layout(
         outer_gap=keepout_left,
         font_pad=frame_pad_x,
         axis_min=2.0,
-        axis_max=keepout_left - clear_x,
+        axis_max=keepout_left,
         from_start=True,
     )
     right_x = _frame_edge_from_font(
         text_value=keepout_right,
         outer_gap=bubble_width_f - keepout_right,
         font_pad=frame_pad_x,
-        axis_min=keepout_right + clear_x,
+        axis_min=keepout_right,
         axis_max=bubble_width_f - 2.0,
         from_start=False,
     )
@@ -425,14 +507,14 @@ def compute_shout_rect_layout(
         outer_gap=keepout_top,
         font_pad=frame_pad_top,
         axis_min=2.0,
-        axis_max=keepout_top - clear_y,
+        axis_max=keepout_top,
         from_start=True,
     )
     bottom_y = _frame_edge_from_font(
         text_value=keepout_bottom,
         outer_gap=bubble_height_f - keepout_bottom,
         font_pad=frame_pad_bottom,
-        axis_min=keepout_bottom + clear_y,
+        axis_min=keepout_bottom,
         axis_max=bubble_height_f - 2.0,
         from_start=False,
     )
@@ -451,20 +533,19 @@ def compute_shout_rect_layout(
             tangent_jitter=corner_tangent_jitter,
             inward_jitter=corner_inward_jitter,
         )
-        corners.append(
-            _clamp_direct_corner(
-                corner,
-                orientation=orientation,
-                text_left=keepout_left,
-                text_top=keepout_top,
-                text_right=keepout_right,
-                text_bottom=keepout_bottom,
-                clear_x=clear_x,
-                clear_y=clear_y,
-                bubble_width=bubble_width_f,
-                bubble_height=bubble_height_f,
-            )
+        clamped_corner = _clamp_direct_corner(
+            corner,
+            orientation=orientation,
+            text_left=keepout_left,
+            text_top=keepout_top,
+            text_right=keepout_right,
+            text_bottom=keepout_bottom,
+            clear_x=clear_x,
+            clear_y=clear_y,
+            bubble_width=bubble_width_f,
+            bubble_height=bubble_height_f,
         )
+        corners.append(clamped_corner)
     inset_anchors = {
         "top": _frame_inset_anchor(
             edge="top",
@@ -555,6 +636,12 @@ def compute_shout_rect_layout(
             single_fraction_min=0.22,
             single_fraction_max=0.78,
         )
+        if edge == "top":
+            midpoint_limit = top_y + (keepout_top - top_y) * float(variant["vertical_inward_ratio"])
+            midpoints = [(point[0], min(point[1], midpoint_limit)) for point in midpoints]
+        elif edge == "bottom":
+            midpoint_limit = bottom_y - (bottom_y - keepout_bottom) * float(variant["vertical_inward_ratio"])
+            midpoints = [(point[0], max(point[1], midpoint_limit)) for point in midpoints]
         points = [corner_a, *midpoints, corner_b]
         controls: list[tuple[float, float]] = []
         is_side_edge = edge in {"left", "right"}
@@ -609,12 +696,32 @@ def compute_shout_rect_layout(
                     bow_value *= 3.10
                 elif start_is_midpoint and end_is_midpoint:
                     pull_value = 0.50
-            controls.append(
-                _clamp_direct_control_point(
-                    _segment_control_point(start, end, pull=pull_value, bow=bow_value),
+            raw_control = _segment_control_point(start, end, pull=pull_value, bow=bow_value)
+            if kinked_here:
+                raw_control = _bias_kink_control_toward_midpoint(
                     edge=edge,
                     start=start,
                     end=end,
+                    control=raw_control,
+                    start_is_midpoint=start_is_midpoint,
+                    end_is_midpoint=end_is_midpoint,
+                )
+                raw_control = _overshoot_kink_control_past_midpoint(
+                    edge=edge,
+                    start=start,
+                    end=end,
+                    control=raw_control,
+                    start_is_midpoint=start_is_midpoint,
+                    end_is_midpoint=end_is_midpoint,
+                )
+            controls.append(
+                _clamp_direct_control_point(
+                    raw_control,
+                    edge=edge,
+                    start=start,
+                    end=end,
+                    start_is_midpoint=start_is_midpoint,
+                    end_is_midpoint=end_is_midpoint,
                     text_left=keepout_left,
                     text_top=keepout_top,
                     text_right=keepout_right,
@@ -634,6 +741,7 @@ def compute_shout_rect_layout(
         "seed": variant_seed,
         "text_bounds": [text_left, text_top, text_right, text_bottom],
         "keepout_bounds": [keepout_left, keepout_top, keepout_right, keepout_bottom],
+        "bubble_box_bounds": [bubble_box_left, bubble_box_top, bubble_box_right, bubble_box_bottom],
         "frame": {
             "left": left_x,
             "top": top_y,
@@ -949,6 +1057,13 @@ def compute_bubble_layout(
     bubble_right = bubble_left + bubble_width
     bubble_bottom = bubble_top + bubble_height
 
+    inner_bubble_left = bubble_left
+    inner_bubble_top = bubble_top
+    inner_bubble_right = bubble_right
+    inner_bubble_bottom = bubble_bottom
+    inner_bubble_width = bubble_width
+    inner_bubble_height = bubble_height
+
     layout = {
         "bubble_left": bubble_left,
         "bubble_top": bubble_top,
@@ -963,17 +1078,55 @@ def compute_bubble_layout(
         "outline_width": outline_width,
     }
     if bubble_type and bubble_type.startswith("shout_rect"):
+        variant = _shout_rect_variant_spec(bubble_type)
+        frame_pad_left = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))
+        frame_pad_right = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))
+        frame_pad_top = int(round(float(font_size) * float(variant["frame_pad_top_ratio"])))
+        frame_pad_bottom = int(round(float(font_size) * float(variant["frame_pad_bottom_ratio"])))
+        bubble_left = inner_bubble_left - frame_pad_left
+        bubble_top = inner_bubble_top - frame_pad_top
+        bubble_right = inner_bubble_right + frame_pad_right
+        bubble_bottom = inner_bubble_bottom + frame_pad_bottom
+        bubble_width = bubble_right - bubble_left
+        bubble_height = bubble_bottom - bubble_top
+        layout.update(
+            {
+                "bubble_left": bubble_left,
+                "bubble_top": bubble_top,
+                "bubble_right": bubble_right,
+                "bubble_bottom": bubble_bottom,
+                "bubble_width": bubble_width,
+                "bubble_height": bubble_height,
+                "inner_bubble_left": inner_bubble_left,
+                "inner_bubble_top": inner_bubble_top,
+                "inner_bubble_right": inner_bubble_right,
+                "inner_bubble_bottom": inner_bubble_bottom,
+                "inner_bubble_width": inner_bubble_width,
+                "inner_bubble_height": inner_bubble_height,
+                "frame_padding_left": frame_pad_left,
+                "frame_padding_right": frame_pad_right,
+                "frame_padding_top": frame_pad_top,
+                "frame_padding_bottom": frame_pad_bottom,
+            }
+        )
         local_text_bbox = (
             int(text_left - bubble_left),
             int(text_top - bubble_top),
             int(text_right - bubble_left),
             int(text_bottom - bubble_top),
         )
+        local_bubble_box = (
+            frame_pad_left,
+            frame_pad_top,
+            frame_pad_left + inner_bubble_width,
+            frame_pad_top + inner_bubble_height,
+        )
         layout["shape_layout"] = compute_shout_rect_layout(
             bubble_type=bubble_type,
             bubble_width=bubble_width,
             bubble_height=bubble_height,
             text_bbox_local=local_text_bbox,
+            bubble_box_local=local_bubble_box,
             font_size=font_size,
             variant_seed=variant_seed,
             bubble_params=bubble_params,

@@ -170,6 +170,14 @@ def main() -> int:
         raise SystemExit("shape_layout missing from shout_rect bubble layout")
 
     frame = shape_layout["frame"]
+    keepout = shape_layout["keepout_bounds"]
+    keepout_global = (
+        bubble_layout["bubble_left"] + keepout[0],
+        bubble_layout["bubble_top"] + keepout[1],
+        bubble_layout["bubble_left"] + keepout[2],
+        bubble_layout["bubble_top"] + keepout[3],
+    )
+    draw.rectangle(keepout_global, outline=(255, 160, 0, 220), width=1)
     frame_global = (
         bubble_layout["bubble_left"] + frame["left"],
         bubble_layout["bubble_top"] + frame["top"],
@@ -246,6 +254,7 @@ def main() -> int:
         "legend": {
             "blue": "bubble bbox",
             "red": "text bbox",
+            "orange": "keepout margin",
             "yellow": "frame",
             "cyan": "corners",
             "magenta": "midpoints",

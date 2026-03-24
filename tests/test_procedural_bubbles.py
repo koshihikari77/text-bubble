@@ -206,6 +206,19 @@ class ProceduralBubbleTests(unittest.TestCase):
         self.assertEqual(shape_layout["bubble_type"], "shout_rect_pointed_drop")
         self.assertEqual(len(shape_layout["corners"]), 4)
         self.assertEqual(len(shape_layout["edges"]), 4)
+        self.assertEqual(
+            shape_layout["keepout_bounds"],
+            [
+                float(layout["frame_padding_left"]),
+                float(layout["frame_padding_top"]),
+                float(layout["frame_padding_left"] + layout["inner_bubble_width"]),
+                float(layout["frame_padding_top"] + layout["inner_bubble_height"]),
+            ],
+        )
+        self.assertLess(layout["bubble_left"], layout["inner_bubble_left"])
+        self.assertLess(layout["bubble_top"], layout["inner_bubble_top"])
+        self.assertGreater(layout["bubble_right"], layout["inner_bubble_right"])
+        self.assertGreater(layout["bubble_bottom"], layout["inner_bubble_bottom"])
 
     def test_compute_bubble_layout_does_not_force_top_midpoint_count_from_variant(self) -> None:
         layout = compute_bubble_layout(
@@ -272,6 +285,10 @@ class ProceduralBubbleTests(unittest.TestCase):
         left_corner, right_corner = shape_layout["corners"][:2]
         left_control, right_control = top_edge["controls"]
 
+        self.assertGreater(left_control[0], midpoint[0])
+        self.assertGreater(right_control[0], midpoint[0])
+        self.assertLess(left_control[0], right_control[0])
+
         left_cross = (midpoint[0] - left_corner[0]) * (left_control[1] - left_corner[1]) - (
             midpoint[1] - left_corner[1]
         ) * (left_control[0] - left_corner[0])
@@ -281,14 +298,6 @@ class ProceduralBubbleTests(unittest.TestCase):
 
         self.assertGreater(abs(left_cross), 1.0)
         self.assertGreater(abs(right_cross), 1.0)
-        self.assertLess(
-            (left_control[0] - midpoint[0]) ** 2 + (left_control[1] - midpoint[1]) ** 2,
-            (left_control[0] - left_corner[0]) ** 2 + (left_control[1] - left_corner[1]) ** 2,
-        )
-        self.assertLess(
-            (right_control[0] - midpoint[0]) ** 2 + (right_control[1] - midpoint[1]) ** 2,
-            (right_control[0] - right_corner[0]) ** 2 + (right_control[1] - right_corner[1]) ** 2,
-        )
         tangent_in = (midpoint[0] - left_control[0], midpoint[1] - left_control[1])
         tangent_out = (right_control[0] - midpoint[0], right_control[1] - midpoint[1])
         angle_in = math.degrees(math.atan2(tangent_in[1], tangent_in[0]))
@@ -299,6 +308,54 @@ class ProceduralBubbleTests(unittest.TestCase):
         while turn > 180.0:
             turn -= 360.0
         self.assertGreater(abs(turn), 1.0)
+
+    def test_compute_bubble_layout_midpoints_keep_top_and_bottom_within_outer_thirty_percent(self) -> None:
+        layout = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="shout_rect_pointed_kink",
+            variant_seed=7,
+            bubble_params={
+                "pull": 0.78,
+                "bow": 10,
+                "side_bow": 10,
+                "midpoint_count_min": 2,
+                "midpoint_count_max": 2,
+                "midpoint_tangent_jitter": 18,
+                "midpoint_depth_jitter": 10,
+                "corner_tangent_jitter": 8,
+                "corner_inward_jitter": 6,
+                "bottom_midpoint_vertex_bias": 0.5,
+            },
+            safe_padding={"left": 1.0, "right": 1.0, "top": 0.8, "bottom": 0.8},
+        )
+
+        shape_layout = layout["shape_layout"]
+        frame = shape_layout["frame"]
+        bubble_box_left, bubble_box_top, bubble_box_right, bubble_box_bottom = shape_layout["bubble_box_bounds"]
+
+        top_limit = frame["top"] + (bubble_box_top - frame["top"]) * 0.3
+        bottom_limit = frame["bottom"] - (frame["bottom"] - bubble_box_bottom) * 0.3
+        left_limit = (frame["left"] + bubble_box_left) * 0.5
+        right_limit = (frame["right"] + bubble_box_right) * 0.5
+
+        top_edge = next(edge for edge in shape_layout["edges"] if edge["edge"] == "top")
+        bottom_edge = next(edge for edge in shape_layout["edges"] if edge["edge"] == "bottom")
+        left_edge = next(edge for edge in shape_layout["edges"] if edge["edge"] == "left")
+        right_edge = next(edge for edge in shape_layout["edges"] if edge["edge"] == "right")
+
+        for point in top_edge["midpoints"]:
+            self.assertLessEqual(point[1], top_limit)
+        for point in bottom_edge["midpoints"]:
+            self.assertGreaterEqual(point[1], bottom_limit)
+        for point in left_edge["midpoints"]:
+            self.assertLessEqual(point[0], left_limit)
+        for point in right_edge["midpoints"]:
+            self.assertGreaterEqual(point[0], right_limit)
 
 
 if __name__ == "__main__":

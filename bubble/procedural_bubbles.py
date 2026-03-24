@@ -468,11 +468,11 @@ def _edge_midpoints_direct(
                 y += rng.uniform(-depth_jitter, depth_jitter)
             x = _clamp(x, min(start[0], end[0]) + clear_x, max(start[0], end[0]) - clear_x)
             if edge == "top":
-                y = min(y, text_top - clear_y)
-                y = max(y, min(start[1], end[1]) + clear_y * 0.5)
+                y = min(y, text_top)
+                y = max(y, min(start[1], end[1]))
             else:
-                y = max(y, text_bottom + clear_y)
-                y = min(y, max(start[1], end[1]) - clear_y * 0.5)
+                y = max(y, text_bottom)
+                y = min(y, max(start[1], end[1]))
             points.append((x, y))
         else:
             x = inset_value
@@ -482,11 +482,11 @@ def _edge_midpoints_direct(
                 y += rng.uniform(-tangent_jitter, tangent_jitter)
             y = _clamp(y, min(start[1], end[1]) + clear_y, max(start[1], end[1]) - clear_y)
             if edge == "left":
-                x = min(x, text_left - clear_x)
-                x = max(x, min(start[0], end[0]) + clear_x * 0.5)
+                x = min(x, text_left)
+                x = max(x, min(start[0], end[0]))
             else:
-                x = max(x, text_right + clear_x)
-                x = min(x, max(start[0], end[0]) - clear_x * 0.5)
+                x = max(x, text_right)
+                x = min(x, max(start[0], end[0]))
             points.append((x, y))
     return points
 
@@ -506,13 +506,13 @@ def _clamp_direct_corner(
 ) -> tuple[float, float]:
     x, y = point
     if "left" in orientation:
-        x = min(x, text_left - clear_x)
+        x = min(x, text_left)
     else:
-        x = max(x, text_right + clear_x)
+        x = max(x, text_right)
     if "top" in orientation:
-        y = min(y, text_top - clear_y)
+        y = min(y, text_top)
     else:
-        y = max(y, text_bottom + clear_y)
+        y = max(y, text_bottom)
     x = _clamp(x, 2.0, bubble_width - 2.0)
     y = _clamp(y, 2.0, bubble_height - 2.0)
     return x, y
@@ -568,20 +568,20 @@ def _clamp_direct_control_point(
     x, y = control
     if edge == "top":
         x = _clamp(x, min(start[0], end[0]) + clear_x * 0.25, max(start[0], end[0]) - clear_x * 0.25)
-        y = min(y, text_top - clear_y)
-        y = max(y, min(start[1], end[1]) + clear_y * 0.35)
+        y = min(y, text_top)
+        y = max(y, min(start[1], end[1]))
     elif edge == "bottom":
         x = _clamp(x, min(start[0], end[0]) + clear_x * 0.25, max(start[0], end[0]) - clear_x * 0.25)
-        y = max(y, text_bottom + clear_y)
-        y = min(y, max(start[1], end[1]) - clear_y * 0.35)
+        y = max(y, text_bottom)
+        y = min(y, max(start[1], end[1]))
     elif edge == "left":
         y = _clamp(y, min(start[1], end[1]) + clear_y * 0.25, max(start[1], end[1]) - clear_y * 0.25)
-        x = min(x, text_left - clear_x)
-        x = max(x, min(start[0], end[0]) + clear_x * 0.35)
+        x = min(x, text_left)
+        x = max(x, min(start[0], end[0]))
     else:
         y = _clamp(y, min(start[1], end[1]) + clear_y * 0.25, max(start[1], end[1]) - clear_y * 0.25)
-        x = max(x, text_right + clear_x)
-        x = min(x, max(start[0], end[0]) - clear_x * 0.35)
+        x = max(x, text_right)
+        x = min(x, max(start[0], end[0]))
     x = _clamp(x, 2.0, bubble_width - 2.0)
     y = _clamp(y, 2.0, bubble_height - 2.0)
     return x, y
@@ -612,18 +612,18 @@ def _build_direct_shout_rect_geometry(params: dict[str, Any], *, curve_style: st
     outer_top_gap = text_top
     outer_bottom_gap = bubble_height - text_bottom
 
-    clear_x = max(4.0, min(outer_left_gap, outer_right_gap) * 0.12)
-    clear_y = max(4.0, min(outer_top_gap, outer_bottom_gap) * 0.12)
+    clear_x = 0.0
+    clear_y = 0.0
 
-    top_y = max(2.0, min(text_top - clear_y * 2.0, outer_top_gap * 0.22))
-    bottom_y = min(bubble_height - 2.0, max(text_bottom + clear_y * 2.0, bubble_height - outer_bottom_gap * 0.22))
-    left_x = max(2.0, min(text_left - clear_x * 2.0, outer_left_gap * 0.22))
-    right_x = min(bubble_width - 2.0, max(text_right + clear_x * 2.0, bubble_width - outer_right_gap * 0.22))
+    top_y = max(2.0, min(text_top, outer_top_gap * 0.22))
+    bottom_y = min(bubble_height - 2.0, max(text_bottom, bubble_height - outer_bottom_gap * 0.22))
+    left_x = max(2.0, min(text_left, outer_left_gap * 0.22))
+    right_x = min(bubble_width - 2.0, max(text_right, bubble_width - outer_right_gap * 0.22))
 
-    top_mid_y = _clamp(text_top - max(clear_y, outer_top_gap * 0.32), top_y + clear_y, text_top - clear_y)
-    bottom_mid_y = _clamp(text_bottom + max(clear_y, outer_bottom_gap * 0.32), text_bottom + clear_y, bottom_y - clear_y)
-    left_mid_x = _clamp(text_left - max(clear_x, outer_left_gap * 0.32), left_x + clear_x, text_left - clear_x)
-    right_mid_x = _clamp(text_right + max(clear_x, outer_right_gap * 0.32), text_right + clear_x, right_x - clear_x)
+    top_mid_y = _clamp(text_top - max(clear_y, outer_top_gap * 0.32), top_y + clear_y, text_top)
+    bottom_mid_y = _clamp(text_bottom + max(clear_y, outer_bottom_gap * 0.32), text_bottom, bottom_y - clear_y)
+    left_mid_x = _clamp(text_left - max(clear_x, outer_left_gap * 0.32), left_x + clear_x, text_left)
+    right_mid_x = _clamp(text_right + max(clear_x, outer_right_gap * 0.32), text_right, right_x - clear_x)
 
     corners = []
     for orientation, point in [
