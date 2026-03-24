@@ -24,7 +24,7 @@ from bubble.render import (  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render one shout_rect bubble with debug guides.")
+    parser = argparse.ArgumentParser(description="Render one bubble with debug guides.")
     parser.add_argument("--input", required=True, help="Input image path.")
     parser.add_argument("--output", required=True, help="Output image path.")
     parser.add_argument("--output-json", help="Optional JSON debug dump path.")
@@ -53,6 +53,9 @@ def _quadratic_point(
 
 
 def _sample_shape_outline(shape_layout: dict[str, object], *, steps: int = 32) -> list[tuple[float, float]]:
+    points = shape_layout.get("points")
+    if isinstance(points, list) and points:
+        return [tuple(point) for point in points]
     corners = [tuple(point) for point in shape_layout["corners"]]
     sampled: list[tuple[float, float]] = [corners[0]]
     for edge_index, edge in enumerate(shape_layout["edges"]):
@@ -167,51 +170,63 @@ def main() -> int:
 
     shape_layout = bubble_layout.get("shape_layout")
     if not isinstance(shape_layout, dict):
-        raise SystemExit("shape_layout missing from shout_rect bubble layout")
+        raise SystemExit("shape_layout missing from bubble layout")
 
-    frame = shape_layout["frame"]
-    keepout = shape_layout["keepout_bounds"]
-    keepout_global = (
-        bubble_layout["bubble_left"] + keepout[0],
-        bubble_layout["bubble_top"] + keepout[1],
-        bubble_layout["bubble_left"] + keepout[2],
-        bubble_layout["bubble_top"] + keepout[3],
-    )
-    draw.rectangle(keepout_global, outline=(255, 160, 0, 220), width=1)
-    frame_global = (
-        bubble_layout["bubble_left"] + frame["left"],
-        bubble_layout["bubble_top"] + frame["top"],
-        bubble_layout["bubble_left"] + frame["right"],
-        bubble_layout["bubble_top"] + frame["bottom"],
-    )
-    draw.rectangle(frame_global, outline=(255, 220, 80, 220), width=1)
+    keepout = shape_layout.get("keepout_bounds") or shape_layout.get("bubble_box_bounds")
+    if isinstance(keepout, list) and len(keepout) == 4:
+        keepout_global = (
+            bubble_layout["bubble_left"] + keepout[0],
+            bubble_layout["bubble_top"] + keepout[1],
+            bubble_layout["bubble_left"] + keepout[2],
+            bubble_layout["bubble_top"] + keepout[3],
+        )
+        draw.rectangle(keepout_global, outline=(255, 160, 0, 220), width=1)
+    frame = shape_layout.get("frame")
+    if isinstance(frame, dict):
+        frame_global = (
+            bubble_layout["bubble_left"] + frame["left"],
+            bubble_layout["bubble_top"] + frame["top"],
+            bubble_layout["bubble_left"] + frame["right"],
+            bubble_layout["bubble_top"] + frame["bottom"],
+        )
+        draw.rectangle(frame_global, outline=(255, 220, 80, 220), width=1)
 
     outline_points = _translate_points(
         _sample_shape_outline(shape_layout),
         bubble_layout["bubble_left"],
         bubble_layout["bubble_top"],
     )
-    draw.line(outline_points + [outline_points[0]], fill=(0, 220, 255, 255), width=2)
+    if len(outline_points) >= 2:
+        draw.line(outline_points + [outline_points[0]], fill=(0, 220, 255, 255), width=2)
 
-    corners = _translate_points([tuple(point) for point in shape_layout["corners"]], bubble_layout["bubble_left"], bubble_layout["bubble_top"])
-    for point in corners:
-        _draw_marker(draw, point, color=(0, 255, 255), radius=4)
+    corners_raw = shape_layout.get("corners")
+    if isinstance(corners_raw, list):
+        corners = _translate_points([tuple(point) for point in corners_raw], bubble_layout["bubble_left"], bubble_layout["bubble_top"])
+        for point in corners:
+            _draw_marker(draw, point, color=(0, 255, 255), radius=4)
 
-    for edge_index, edge in enumerate(shape_layout["edges"]):
-        local_points = [
-            tuple(shape_layout["corners"][edge_index]),
-            *[tuple(point) for point in edge["midpoints"]],
-            tuple(shape_layout["corners"][(edge_index + 1) % 4]),
-        ]
-        points = _translate_points(local_points, bubble_layout["bubble_left"], bubble_layout["bubble_top"])
-        controls = _translate_points([tuple(point) for point in edge["controls"]], bubble_layout["bubble_left"], bubble_layout["bubble_top"])
-        for point in points[1:-1]:
-            _draw_marker(draw, point, color=(255, 0, 255), radius=4)
-        for control in controls:
-            _draw_marker(draw, control, color=(0, 220, 0), radius=3)
-        for start, control, end in zip(points, controls, points[1:]):
-            draw.line([start, control], fill=(0, 220, 0, 140), width=1)
-            draw.line([control, end], fill=(0, 220, 0, 140), width=1)
+    edges_raw = shape_layout.get("edges")
+    if isinstance(edges_raw, list) and isinstance(corners_raw, list):
+        for edge_index, edge in enumerate(edges_raw):
+            local_points = [
+                tuple(corners_raw[edge_index]),
+                *[tuple(point) for point in edge["midpoints"]],
+                tuple(corners_raw[(edge_index + 1) % 4]),
+            ]
+            points = _translate_points(local_points, bubble_layout["bubble_left"], bubble_layout["bubble_top"])
+            controls = _translate_points([tuple(point) for point in edge["controls"]], bubble_layout["bubble_left"], bubble_layout["bubble_top"])
+            for point in points[1:-1]:
+                _draw_marker(draw, point, color=(255, 0, 255), radius=4)
+            for control in controls:
+                _draw_marker(draw, control, color=(0, 220, 0), radius=3)
+            for start, control, end in zip(points, controls, points[1:]):
+                draw.line([start, control], fill=(0, 220, 0, 140), width=1)
+                draw.line([control, end], fill=(0, 220, 0, 140), width=1)
+    elif isinstance(shape_layout.get("points"), list):
+        point_markers = _translate_points([tuple(point) for point in shape_layout["points"]], bubble_layout["bubble_left"], bubble_layout["bubble_top"])
+        stride = max(1, len(point_markers) // 24)
+        for point in point_markers[::stride]:
+            _draw_marker(draw, point, color=(255, 0, 255), radius=3)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -254,12 +269,12 @@ def main() -> int:
         "legend": {
             "blue": "bubble bbox",
             "red": "text bbox",
-            "orange": "keepout margin",
-            "yellow": "frame",
+            "orange": "inner bubble box / keepout",
+            "yellow": "outer frame",
             "cyan": "corners",
-            "magenta": "midpoints",
+            "magenta": "midpoints or sampled path points",
             "green": "quadratic controls and handles",
-            "outline": "sampled shout_rect outline",
+            "outline": "sampled outline",
         },
     }
     output_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

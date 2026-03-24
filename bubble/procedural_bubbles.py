@@ -245,6 +245,29 @@ def _bubble_svg(path_d: str, *, view_box: list[float]) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
+def _shape_layout_generator_params(params: dict[str, Any]) -> dict[str, Any]:
+    shape_layout = params.get("shape_layout")
+    if not isinstance(shape_layout, dict):
+        return params
+    generator_params = shape_layout.get("generator_params")
+    if not isinstance(generator_params, dict):
+        return params
+    merged = dict(params)
+    merged.update(generator_params)
+    return merged
+
+
+def _shape_layout_path_svg(params: dict[str, Any]) -> str | None:
+    shape_layout = params.get("shape_layout")
+    if not isinstance(shape_layout, dict):
+        return None
+    path_d = shape_layout.get("path_d")
+    view_box = shape_layout.get("view_box")
+    if not isinstance(path_d, str) or not isinstance(view_box, list):
+        return None
+    return _bubble_svg(path_d, view_box=[float(value) for value in view_box])
+
+
 def _json_list_numbers(value: Any, *, name: str) -> list[float]:
     if not isinstance(value, list) or not value:
         raise RuntimeError(f"procedural bubble param '{name}' must be a non-empty list")
@@ -273,6 +296,10 @@ def _json_point_list(value: Any, *, name: str) -> list[tuple[float, float]]:
 
 
 def generate_polygon_wavy_panel(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
     view_box = _json_list_numbers(params.get("view_box", [50, 50, 420, 660]), name="view_box")
     if len(view_box) != 4:
         raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
@@ -294,6 +321,10 @@ def generate_polygon_wavy_panel(params: dict[str, Any]) -> str:
 
 
 def generate_polygon_shout_panel(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
     view_box = _json_list_numbers(params.get("view_box", [50, 50, 420, 660]), name="view_box")
     if len(view_box) != 4:
         raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
@@ -314,6 +345,10 @@ def generate_polygon_shout_panel(params: dict[str, Any]) -> str:
 
 
 def generate_bowed_rect_panel(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
     view_box = _json_list_numbers(params.get("view_box", [0, 0, 360, 600]), name="view_box")
     if len(view_box) != 4:
         raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
@@ -748,6 +783,9 @@ def _build_direct_shout_rect_geometry(params: dict[str, Any], *, curve_style: st
 
 
 def _direct_shout_rect_svg(params: dict[str, Any], *, curve_style: str) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
     shape_layout = params.get("shape_layout")
     if isinstance(shape_layout, dict):
         return _bubble_svg(
@@ -1032,6 +1070,10 @@ def generate_pointed_rect_kink_panel(params: dict[str, Any]) -> str:
 
 
 def generate_directional_offset_hill(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
     view_box = _json_list_numbers(params.get("view_box", [0, 0, 360, 600]), name="view_box")
     if len(view_box) != 4:
         raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
@@ -1141,7 +1183,52 @@ def generate_directional_offset_hill(params: dict[str, Any]) -> str:
     return _bubble_svg(path_d, view_box=view_box)
 
 
+def generate_ellipse_panel(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
+    view_box = _json_list_numbers(params.get("view_box", [0, 0, 360, 600]), name="view_box")
+    if len(view_box) != 4:
+        raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
+    vb_x, vb_y, vb_w, vb_h = view_box
+    cx = float(params.get("center_x", vb_x + vb_w / 2.0))
+    cy = float(params.get("center_y", vb_y + vb_h / 2.0))
+    rx = float(params.get("radius_x", max(2.0, vb_w / 2.0 - 4.0)))
+    ry = float(params.get("radius_y", max(2.0, vb_h / 2.0 - 4.0)))
+    path_d = (
+        f"M {cx - rx:.3f} {cy:.3f} "
+        f"A {rx:.3f} {ry:.3f} 0 1 0 {cx + rx:.3f} {cy:.3f} "
+        f"A {rx:.3f} {ry:.3f} 0 1 0 {cx - rx:.3f} {cy:.3f} Z"
+    )
+    return _bubble_svg(path_d, view_box=view_box)
+
+
+def generate_rect_panel(params: dict[str, Any]) -> str:
+    from_shape_layout = _shape_layout_path_svg(params)
+    if from_shape_layout is not None:
+        return from_shape_layout
+    params = _shape_layout_generator_params(params)
+    view_box = _json_list_numbers(params.get("view_box", [0, 0, 360, 600]), name="view_box")
+    if len(view_box) != 4:
+        raise RuntimeError("procedural bubble param 'view_box' must contain 4 numbers")
+    vb_x, vb_y, vb_w, vb_h = view_box
+    left = float(params.get("left", vb_x + 3.0))
+    top = float(params.get("top", vb_y + 3.0))
+    right = float(params.get("right", vb_x + vb_w - 3.0))
+    bottom = float(params.get("bottom", vb_y + vb_h - 3.0))
+    path_d = (
+        f"M {left:.3f} {top:.3f} "
+        f"L {right:.3f} {top:.3f} "
+        f"L {right:.3f} {bottom:.3f} "
+        f"L {left:.3f} {bottom:.3f} Z"
+    )
+    return _bubble_svg(path_d, view_box=view_box)
+
+
 PROCEDURAL_GENERATORS: dict[str, Any] = {
+    "ellipse_panel": generate_ellipse_panel,
+    "rect_panel": generate_rect_panel,
     "polygon_wavy_panel": generate_polygon_wavy_panel,
     "polygon_shout_panel": generate_polygon_shout_panel,
     "bowed_rect_panel": generate_bowed_rect_panel,

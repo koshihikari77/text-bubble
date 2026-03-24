@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 import math
 import os
 from functools import lru_cache
@@ -11,6 +12,15 @@ from bubble.vertical_uax import classify_text_clusters
 
 
 DEFAULT_TEXT_LETTER_SPACING_PX = -1.0
+GENERIC_PROCEDURAL_BUBBLE_TYPES = {
+    "ellipse",
+    "square",
+    "narration",
+    "shout",
+    "wavy",
+    "wavy_fine",
+    "wavy_polygon",
+}
 
 
 def _shout_rect_rng(seed: int | None) -> Any | None:
@@ -23,6 +33,480 @@ def _shout_rect_rng(seed: int | None) -> Any | None:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _shape_layout_view_box(width: int, height: int) -> list[float]:
+    return [0.0, 0.0, float(width), float(height)]
+
+
+def _shape_layout_stroke_inset(outline_width: int) -> float:
+    return max(3.0, float(outline_width) * 1.5)
+
+
+def _scale_x(value: float, vb_x: float, scale_x: float) -> float:
+    return (value - vb_x) * scale_x
+
+
+def _scale_y(value: float, vb_y: float, scale_y: float) -> float:
+    return (value - vb_y) * scale_y
+
+
+def _normalize(x: float, y: float) -> tuple[float, float]:
+    norm = (x * x + y * y) ** 0.5
+    if norm <= 1e-6:
+        return 0.0, 0.0
+    return x / norm, y / norm
+
+
+def _rotate(x: float, y: float, angle: float) -> tuple[float, float]:
+    c = math.cos(angle)
+    s = math.sin(angle)
+    return x * c - y * s, x * s + y * c
+
+
+def _cross(ax: float, ay: float, bx: float, by: float) -> float:
+    return ax * by - ay * bx
+
+
+def _segments_intersect(
+    a1: tuple[float, float],
+    a2: tuple[float, float],
+    b1: tuple[float, float],
+    b2: tuple[float, float],
+) -> bool:
+    ax = a2[0] - a1[0]
+    ay = a2[1] - a1[1]
+    bx = b2[0] - b1[0]
+    by = b2[1] - b1[1]
+    denom = _cross(ax, ay, bx, by)
+    if abs(denom) < 1e-6:
+        return False
+    dx = b1[0] - a1[0]
+    dy = b1[1] - a1[1]
+    t = _cross(dx, dy, bx, by) / denom
+    u = _cross(dx, dy, ax, ay) / denom
+    eps = 1e-5
+    return eps < t < 1.0 - eps and eps < u < 1.0 - eps
+
+
+def _find_self_intersections(points: list[tuple[float, float]]) -> list[tuple[int, int]]:
+    count = len(points)
+    hits: list[tuple[int, int]] = []
+    for i in range(count):
+        a1 = points[i]
+        a2 = points[(i + 1) % count]
+        for j in range(i + 2, count):
+            if j == i or (j + 1) % count == i or (i + 1) % count == j:
+                continue
+            if i == 0 and j == count - 1:
+                continue
+            b1 = points[j]
+            b2 = points[(j + 1) % count]
+            if _segments_intersect(a1, a2, b1, b2):
+                hits.append((i, j))
+    return hits
+
+
+def _circular_distance(a: int, b: int, size: int) -> int:
+    raw = abs(a - b)
+    return min(raw, size - raw)
+
+
+def _dampen_near_intersections(
+    *,
+    base_points: list[tuple[float, float]],
+    normals: list[tuple[float, float]],
+    directions: list[tuple[float, float]],
+    distances: list[float],
+) -> tuple[list[tuple[float, float]], list[float]]:
+    point_count = len(base_points)
+    current_dirs = directions[:]
+    current_distances = distances[:]
+
+    for _ in range(6):
+        points = [
+            (
+                base_points[i][0] + current_dirs[i][0] * current_distances[i],
+                base_points[i][1] + current_dirs[i][1] * current_distances[i],
+            )
+            for i in range(point_count)
+        ]
+        hits = _find_self_intersections(points)
+        if not hits:
+            return current_dirs, current_distances
+
+        severity = [0.0] * point_count
+        for seg_a, seg_b in hits:
+            pivots = (seg_a, (seg_a + 1) % point_count, seg_b, (seg_b + 1) % point_count)
+            for pivot in pivots:
+                for idx in range(point_count):
+                    dist = _circular_distance(idx, pivot, point_count)
+                    if dist > 4:
+                        continue
+                    severity[idx] = max(severity[idx], (5 - dist) / 5.0)
+
+        next_dirs: list[tuple[float, float]] = []
+        next_distances: list[float] = []
+        for i in range(point_count):
+            s = severity[i]
+            normal_x, normal_y = normals[i]
+            dir_x, dir_y = current_dirs[i]
+            blend = 0.55 * s
+            mixed_x = dir_x * (1.0 - blend) + normal_x * blend
+            mixed_y = dir_y * (1.0 - blend) + normal_y * blend
+            mixed_x, mixed_y = _normalize(mixed_x, mixed_y)
+            next_dirs.append((mixed_x, mixed_y))
+            next_distances.append(current_distances[i] * (1.0 - 0.24 * s))
+        current_dirs = next_dirs
+        current_distances = next_distances
+
+    return current_dirs, current_distances
+
+
+def _closed_catmull_rom_path(points: list[tuple[float, float]], tension: float = 0.72) -> str:
+    commands = [f"M {points[0][0]:.3f} {points[0][1]:.3f}"]
+    factor = tension / 6.0
+    count = len(points)
+    for index in range(count):
+        p0 = points[(index - 1) % count]
+        p1 = points[index % count]
+        p2 = points[(index + 1) % count]
+        p3 = points[(index + 2) % count]
+        c1x = p1[0] + (p2[0] - p0[0]) * factor
+        c1y = p1[1] + (p2[1] - p0[1]) * factor
+        c2x = p2[0] - (p3[0] - p1[0]) * factor
+        c2y = p2[1] - (p3[1] - p1[1]) * factor
+        commands.append(
+            f"C {c1x:.3f} {c1y:.3f} {c2x:.3f} {c2y:.3f} {p2[0]:.3f} {p2[1]:.3f}"
+        )
+    commands.append("Z")
+    return " ".join(commands)
+
+
+def _rounded_bulged_points(
+    points: list[tuple[float, float]],
+    *,
+    center_x: float,
+    center_y: float,
+    round_ratio: float,
+    edge_bulge: list[float],
+) -> list[tuple[float, float]]:
+    expanded: list[tuple[float, float]] = []
+    count = len(points)
+    for index in range(count):
+        start = points[index]
+        end = points[(index + 1) % count]
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        seg_len = (dx * dx + dy * dy) ** 0.5 or 1.0
+        ux = dx / seg_len
+        uy = dy / seg_len
+        nx = -uy
+        ny = ux
+        inset = seg_len * round_ratio
+        entry = start[0] + ux * inset, start[1] + uy * inset
+        exit = end[0] - ux * inset, end[1] - uy * inset
+        mx = (start[0] + end[0]) / 2.0
+        my = (start[1] + end[1]) / 2.0
+        outward_sign = 1.0 if (mx - center_x) * nx + (my - center_y) * ny > 0 else -1.0
+        bulge = edge_bulge[index % len(edge_bulge)] * outward_sign
+        midpoint = mx + nx * bulge, my + ny * bulge
+        expanded.extend([entry, midpoint, exit])
+    return expanded
+
+
+def _curved_polygon_path(
+    points: list[tuple[float, float]],
+    *,
+    center_x: float,
+    center_y: float,
+    curve_depth: float,
+    curved_edges: list[int],
+) -> str:
+    commands = [f"M {points[0][0]:.3f} {points[0][1]:.3f}"]
+    curved = set(curved_edges)
+    count = len(points)
+    for index in range(count):
+        start = points[index]
+        end = points[(index + 1) % count]
+        if index not in curved:
+            commands.append(f"L {end[0]:.3f} {end[1]:.3f}")
+            continue
+        mid_x = (start[0] + end[0]) / 2.0
+        mid_y = (start[1] + end[1]) / 2.0
+        toward_center_x = center_x - mid_x
+        toward_center_y = center_y - mid_y
+        toward_len = (toward_center_x * toward_center_x + toward_center_y * toward_center_y) ** 0.5 or 1.0
+        seg_len = ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
+        depth = min(curve_depth * seg_len, 12.0)
+        control_x = mid_x + toward_center_x / toward_len * depth
+        control_y = mid_y + toward_center_y / toward_len * depth
+        commands.append(f"Q {control_x:.3f} {control_y:.3f} {end[0]:.3f} {end[1]:.3f}")
+    commands.append("Z")
+    return " ".join(commands)
+
+
+def _path_from_points(points: list[tuple[float, float]]) -> str:
+    return "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z"
+
+
+def _ellipse_path(*, cx: float, cy: float, rx: float, ry: float) -> str:
+    return (
+        f"M {cx - rx:.3f} {cy:.3f} "
+        f"A {rx:.3f} {ry:.3f} 0 1 0 {cx + rx:.3f} {cy:.3f} "
+        f"A {rx:.3f} {ry:.3f} 0 1 0 {cx - rx:.3f} {cy:.3f} Z"
+    )
+
+
+def _rect_path(*, left: float, top: float, right: float, bottom: float) -> str:
+    return (
+        f"M {left:.3f} {top:.3f} "
+        f"L {right:.3f} {top:.3f} "
+        f"L {right:.3f} {bottom:.3f} "
+        f"L {left:.3f} {bottom:.3f} Z"
+    )
+
+
+def _generic_generator_shape_layout(
+    *,
+    bubble_type: str,
+    bubble_width: int,
+    bubble_height: int,
+    outline_width: int,
+    font_size: int,
+    variant_seed: int | None,
+    bubble_params: dict[str, Any] | None,
+    bubble_box_local: tuple[int, int, int, int] | None = None,
+) -> dict[str, Any] | None:
+    view_box = _shape_layout_view_box(bubble_width, bubble_height)
+    if bubble_type in {"ellipse", "square"}:
+        inset = _shape_layout_stroke_inset(outline_width)
+        cx = bubble_width / 2.0
+        cy = bubble_height / 2.0
+        rx = max(2.0, bubble_width / 2.0 - inset)
+        ry = max(2.0, bubble_height / 2.0 - inset)
+        return {
+            "kind": "ellipse",
+            "bubble_type": bubble_type,
+            "view_box": view_box,
+            "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+            "center_x": cx,
+            "center_y": cy,
+            "radius_x": rx,
+            "radius_y": ry,
+            "path_d": _ellipse_path(cx=cx, cy=cy, rx=rx, ry=ry),
+        }
+    elif bubble_type == "narration":
+        inset = _shape_layout_stroke_inset(outline_width)
+        left = inset
+        top = inset
+        right = max(inset + 1.0, float(bubble_width) - inset)
+        bottom = max(inset + 1.0, float(bubble_height) - inset)
+        return {
+            "kind": "rect",
+            "bubble_type": bubble_type,
+            "view_box": view_box,
+            "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "path_d": _rect_path(left=left, top=top, right=right, bottom=bottom),
+        }
+    elif bubble_type in {"shout", "wavy_polygon", "wavy", "wavy_fine"}:
+        source = dict(bubble_params or {})
+        raw_view_box = source.get("view_box", [0, 0, bubble_width, bubble_height])
+        vb_x, vb_y, vb_w, vb_h = (
+            float(raw_view_box[0]),
+            float(raw_view_box[1]),
+            float(raw_view_box[2]),
+            float(raw_view_box[3]),
+        )
+        scale_x = bubble_width / max(vb_w, 1e-6)
+        scale_y = bubble_height / max(vb_h, 1e-6)
+        if bubble_type in {"shout", "wavy_polygon"}:
+            points = []
+            for raw_x, raw_y in source.get("points", []):
+                points.append([_scale_x(float(raw_x), vb_x, scale_x), _scale_y(float(raw_y), vb_y, scale_y)])
+            points_t = [(float(x), float(y)) for x, y in points]
+            center_x = bubble_width / 2.0
+            center_y = bubble_height / 2.0
+            if bubble_type == "shout":
+                curved_edges = [int(value) for value in source.get("curved_edges", [])]
+                curve_depth = float(source.get("curve_depth", 0.06))
+                return {
+                    "kind": "polygon_shout",
+                    "bubble_type": bubble_type,
+                    "view_box": view_box,
+                    "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+                    "points": points,
+                    "curved_edges": curved_edges,
+                    "curve_depth": curve_depth,
+                    "center_x": center_x,
+                    "center_y": center_y,
+                    "path_d": _curved_polygon_path(
+                        points_t,
+                        center_x=center_x,
+                        center_y=center_y,
+                        curve_depth=curve_depth,
+                        curved_edges=curved_edges,
+                    ),
+                }
+            round_ratio = float(source.get("round_ratio", 0.14))
+            bulge_scale = min(scale_x, scale_y)
+            edge_bulge = [float(value) * bulge_scale for value in source.get("edge_bulge", [])]
+            tension = float(source.get("tension", 0.72))
+            expanded_points = _rounded_bulged_points(
+                points_t,
+                center_x=center_x,
+                center_y=center_y,
+                round_ratio=round_ratio,
+                edge_bulge=edge_bulge,
+            )
+            return {
+                "kind": "polygon_wavy",
+                "bubble_type": bubble_type,
+                "view_box": view_box,
+                "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+                "points": points,
+                "expanded_points": [[float(x), float(y)] for x, y in expanded_points],
+                "round_ratio": round_ratio,
+                "edge_bulge": edge_bulge,
+                "tension": tension,
+                "center_x": center_x,
+                "center_y": center_y,
+                "path_d": _closed_catmull_rom_path(expanded_points, tension=tension),
+            }
+        else:
+            if bubble_box_local is not None:
+                inner_left = float(bubble_box_local[0])
+                inner_top = float(bubble_box_local[1])
+                inner_right = float(bubble_box_local[2])
+                inner_bottom = float(bubble_box_local[3])
+            else:
+                inner_left = 0.0
+                inner_top = 0.0
+                inner_right = float(bubble_width)
+                inner_bottom = float(bubble_height)
+            stroke_inset = _shape_layout_stroke_inset(outline_width)
+            amp = float(source["amp"])
+            amp_px = max(float(font_size) * max(0.36, amp * 1.9), 7.0)
+            cx = bubble_width / 2.0
+            cy = bubble_height / 2.0
+            rx = max(2.0, bubble_width / 2.0 - stroke_inset - amp_px)
+            ry = max(2.0, bubble_height / 2.0 - stroke_inset - amp_px)
+            n = int(source.get("samples", 128))
+            base_phase = float(source.get("phase", 0.4))
+            asymmetry = float(source.get("asymmetry", 0.15))
+            radial_blend = float(source.get("radial_blend", 0.0))
+            freq = int(source["freq"])
+            seed = int(variant_seed if variant_seed is not None else source.get("seed", 9))
+
+            import random
+
+            rng = random.Random(seed)
+            phase_shift = rng.uniform(0.0, math.tau)
+            lobe_amp = [rng.uniform(0.62, 1.38) for _ in range(freq)]
+            lobe_phase = [rng.uniform(-0.28, 0.28) for _ in range(freq)]
+            lobe_width = [rng.uniform(0.78, 1.32) for _ in range(freq)]
+            rng2 = random.Random(seed + 101)
+            lobe_skew = [rng2.uniform(-0.18, 0.18) for _ in range(freq)]
+            lobe_floor = [rng2.uniform(0.58, 0.78) for _ in range(freq)]
+            lobe_angle = [rng2.uniform(-0.65, 0.65) for _ in range(freq)]
+            lobe_tangent = [rng2.uniform(-0.08, 0.08) for _ in range(freq)]
+            width_total = sum(lobe_width)
+            width_cumulative = [0.0]
+            acc = 0.0
+            for width_scale in lobe_width:
+                acc += width_scale / width_total * freq
+                width_cumulative.append(acc)
+
+            base_points: list[tuple[float, float]] = []
+            normals: list[tuple[float, float]] = []
+            directions: list[tuple[float, float]] = []
+            distances: list[float] = []
+            for i in range(n):
+                t = 2 * math.pi * i / n + base_phase + phase_shift
+                x0 = rx * math.cos(t)
+                y0 = ry * math.sin(t)
+                base_points.append((cx + x0, cy + y0))
+                nx, ny = _normalize(math.cos(t) / rx, math.sin(t) / ry)
+                rx_dir, ry_dir = _normalize(x0, y0)
+                tx, ty = -ny, nx
+                normals.append((nx, ny))
+                local_amp = amp_px * (0.78 + 0.22 * abs(math.sin(t)))
+                side_envelope = 1.0 + asymmetry * (0.65 * math.sin(t - 0.45) + 0.35 * math.sin(2.0 * t + 1.2))
+                lobe_pos = ((freq * t) / (2.0 * math.pi)) % freq
+                lobe_slot = bisect_right(width_cumulative, lobe_pos) - 1
+                lobe_slot = max(0, min(freq - 1, lobe_slot))
+                next_index = (lobe_slot + 1) % freq
+                span_start = width_cumulative[lobe_slot]
+                span_end = width_cumulative[lobe_slot + 1]
+                span = max(1e-6, span_end - span_start)
+                mix = (lobe_pos - span_start) / span
+                smooth_mix = mix * mix * (3.0 - 2.0 * mix)
+                amp_scale = lobe_amp[lobe_slot] * (1.0 - smooth_mix) + lobe_amp[next_index] * smooth_mix
+                phase_offset = lobe_phase[lobe_slot] * (1.0 - smooth_mix) + lobe_phase[next_index] * smooth_mix
+                skew_mix = max(0.0, min(1.0, mix + lobe_skew[lobe_slot]))
+                hill = math.sin(math.pi * skew_mix)
+                hill = max(0.0, hill) ** 1.55
+                hill_floor = lobe_floor[lobe_slot] * (1.0 - smooth_mix) + lobe_floor[next_index] * smooth_mix
+                wave = hill_floor + (1.0 - hill_floor) * hill
+                wave = wave * 2.0 - 1.0
+                distance = local_amp * amp_scale * side_envelope * (0.70 + 0.42 * wave)
+                direction_x = nx * (1.0 - radial_blend) + rx_dir * radial_blend
+                direction_y = ny * (1.0 - radial_blend) + ry_dir * radial_blend
+                direction_x, direction_y = _normalize(direction_x, direction_y)
+                local_angle = lobe_angle[lobe_slot] * (1.0 - smooth_mix) + lobe_angle[next_index] * smooth_mix
+                local_angle += 0.10 * math.sin(3.0 * t - 0.6) + 0.05 * math.sin(5.0 * t + 0.9)
+                direction_x, direction_y = _rotate(direction_x, direction_y, local_angle + phase_offset * 0.2)
+                tangent_mix = lobe_tangent[lobe_slot] * (1.0 - smooth_mix) + lobe_tangent[next_index] * smooth_mix
+                direction_x += tx * tangent_mix
+                direction_y += ty * tangent_mix
+                direction_x, direction_y = _normalize(direction_x, direction_y)
+                directions.append((direction_x, direction_y))
+                distances.append(max(0.0, distance))
+
+            corrected_dirs, corrected_distances = _dampen_near_intersections(
+                base_points=base_points,
+                normals=normals,
+                directions=directions,
+                distances=distances,
+            )
+            points = [
+                (
+                    base_points[i][0] + corrected_dirs[i][0] * corrected_distances[i],
+                    base_points[i][1] + corrected_dirs[i][1] * corrected_distances[i],
+                )
+                for i in range(n)
+            ]
+            return {
+                "kind": "directional_hill",
+                "bubble_type": bubble_type,
+                "view_box": view_box,
+                "points": [[float(x), float(y)] for x, y in points],
+                "path_d": _path_from_points(points),
+                "center_x": cx,
+                "center_y": cy,
+                "radius_x": rx,
+                "radius_y": ry,
+                "bubble_box_bounds": [inner_left, inner_top, inner_right, inner_bottom],
+                "frame": {
+                    "left": 0.0,
+                    "top": 0.0,
+                    "right": float(bubble_width),
+                    "bottom": float(bubble_height),
+                },
+                "amp": amp,
+                "amp_px": amp_px,
+                "freq": freq,
+                "seed": seed,
+                "phase": base_phase,
+                "phase_shift": phase_shift,
+            }
+    else:
+        return None
+    return None
 
 
 def _jitter_corner(
@@ -426,6 +910,18 @@ def _kink_bow_profile(edge: str, midpoint_count: int) -> tuple[float, float]:
     return 2.45, 2.75
 
 
+def _path_from_shout_rect_layout(shape_layout: dict[str, Any]) -> str:
+    corners = [tuple(point) for point in shape_layout["corners"]]
+    commands = [f"M {corners[0][0]:.3f} {corners[0][1]:.3f}"]
+    for edge_index, edge in enumerate(shape_layout["edges"]):
+        points = [corners[edge_index], *[tuple(point) for point in edge["midpoints"]], corners[(edge_index + 1) % 4]]
+        controls = [tuple(point) for point in edge["controls"]]
+        for control, end in zip(controls, points[1:]):
+            commands.append(f"Q {control[0]:.3f} {control[1]:.3f} {end[0]:.3f} {end[1]:.3f}")
+    commands.append("Z")
+    return " ".join(commands)
+
+
 def compute_shout_rect_layout(
     *,
     bubble_type: str,
@@ -734,7 +1230,7 @@ def compute_shout_rect_layout(
             )
         edges.append({"edge": edge, "midpoints": midpoints, "controls": controls})
 
-    return {
+    shape_layout = {
         "kind": "shout_rect",
         "bubble_type": bubble_type,
         "curve_style": curve_style,
@@ -757,6 +1253,8 @@ def compute_shout_rect_layout(
         "params": params,
         "font_size": font_size,
     }
+    shape_layout["path_d"] = _path_from_shout_rect_layout(shape_layout)
+    return shape_layout
 
 
 def _resolve_metric_font_path(font_path: str | None) -> str | None:
@@ -1029,26 +1527,9 @@ def compute_bubble_layout(
         padding_bottom = _side_padding("bottom", vertical_padding)
     bubble_width = text_width + padding_left + padding_right
     bubble_height = text_height + padding_top + padding_bottom
-    if safe_inset is not None and safe_padding is None:
-        inset_left = max(0.0, min(0.45, float(safe_inset.get("left", 0.0))))
-        inset_right = max(0.0, min(0.45, float(safe_inset.get("right", 0.0))))
-        inset_top = max(0.0, min(0.45, float(safe_inset.get("top", 0.0))))
-        inset_bottom = max(0.0, min(0.45, float(safe_inset.get("bottom", 0.0))))
-        usable_width_ratio = max(0.05, 1.0 - inset_left - inset_right)
-        usable_height_ratio = max(0.05, 1.0 - inset_top - inset_bottom)
-        bubble_width = max(bubble_width, int(math.ceil(text_width / usable_width_ratio)))
-        bubble_height = max(bubble_height, int(math.ceil(text_height / usable_height_ratio)))
-
     if safe_padding is not None:
         bubble_left = text_left - padding_left
         bubble_top = text_top - padding_top
-    elif safe_inset is not None:
-        text_center_x = (text_left + text_right) / 2.0
-        text_center_y = (text_top + text_bottom) / 2.0
-        usable_width_ratio = max(0.05, 1.0 - inset_left - inset_right)
-        usable_height_ratio = max(0.05, 1.0 - inset_top - inset_bottom)
-        bubble_left = int(round(text_center_x - bubble_width * (inset_left + usable_width_ratio / 2.0)))
-        bubble_top = int(round(text_center_y - bubble_height * (inset_top + usable_height_ratio / 2.0)))
     else:
         horizontal_slack = max(0, bubble_width - text_width)
         vertical_slack = max(0, bubble_height - text_height)
@@ -1077,7 +1558,56 @@ def compute_bubble_layout(
         "padding_bottom": padding_bottom,
         "outline_width": outline_width,
     }
-    if bubble_type and bubble_type.startswith("shout_rect"):
+    if bubble_type in {"wavy", "wavy_fine"}:
+        frame_pad_left = int(round(float(font_size) * 0.72))
+        frame_pad_right = int(round(float(font_size) * 0.72))
+        frame_pad_top = int(round(float(font_size) * 0.98))
+        frame_pad_bottom = int(round(float(font_size) * 0.98))
+        bubble_left = inner_bubble_left - frame_pad_left
+        bubble_top = inner_bubble_top - frame_pad_top
+        bubble_right = inner_bubble_right + frame_pad_right
+        bubble_bottom = inner_bubble_bottom + frame_pad_bottom
+        bubble_width = bubble_right - bubble_left
+        bubble_height = bubble_bottom - bubble_top
+        layout.update(
+            {
+                "bubble_left": bubble_left,
+                "bubble_top": bubble_top,
+                "bubble_right": bubble_right,
+                "bubble_bottom": bubble_bottom,
+                "bubble_width": bubble_width,
+                "bubble_height": bubble_height,
+                "inner_bubble_left": inner_bubble_left,
+                "inner_bubble_top": inner_bubble_top,
+                "inner_bubble_right": inner_bubble_right,
+                "inner_bubble_bottom": inner_bubble_bottom,
+                "inner_bubble_width": inner_bubble_width,
+                "inner_bubble_height": inner_bubble_height,
+                "frame_padding_left": frame_pad_left,
+                "frame_padding_right": frame_pad_right,
+                "frame_padding_top": frame_pad_top,
+                "frame_padding_bottom": frame_pad_bottom,
+            }
+        )
+        local_bubble_box = (
+            frame_pad_left,
+            frame_pad_top,
+            frame_pad_left + inner_bubble_width,
+            frame_pad_top + inner_bubble_height,
+        )
+        shape_layout = _generic_generator_shape_layout(
+            bubble_type=bubble_type,
+            bubble_width=bubble_width,
+            bubble_height=bubble_height,
+            outline_width=outline_width,
+            font_size=font_size,
+            variant_seed=variant_seed,
+            bubble_params=bubble_params,
+            bubble_box_local=local_bubble_box,
+        )
+        if shape_layout is not None:
+            layout["shape_layout"] = shape_layout
+    elif bubble_type and bubble_type.startswith("shout_rect"):
         variant = _shout_rect_variant_spec(bubble_type)
         frame_pad_left = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))
         frame_pad_right = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))
@@ -1131,4 +1661,16 @@ def compute_bubble_layout(
             variant_seed=variant_seed,
             bubble_params=bubble_params,
         )
+    elif bubble_type in GENERIC_PROCEDURAL_BUBBLE_TYPES:
+        shape_layout = _generic_generator_shape_layout(
+            bubble_type=bubble_type,
+            bubble_width=bubble_width,
+            bubble_height=bubble_height,
+            outline_width=outline_width,
+            font_size=font_size,
+            variant_seed=variant_seed,
+            bubble_params=bubble_params,
+        )
+        if shape_layout is not None:
+            layout["shape_layout"] = shape_layout
     return layout

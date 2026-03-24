@@ -13,7 +13,7 @@ from bubble.render import PreparedBubble, render_bubbles
 
 
 class RenderShoutRectTests(unittest.TestCase):
-    def test_single_shout_rect_bypasses_merged_vector_render(self) -> None:
+    def test_single_procedural_bubble_does_not_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = Path(tmpdir) / "input.png"
             output_path = Path(tmpdir) / "output.png"
@@ -29,7 +29,7 @@ class RenderShoutRectTests(unittest.TestCase):
             )
             bubble_asset = ResolvedBubbleAsset(
                 bubble_type="shout_rect_pointed_drop",
-                source_kind="svg",
+                source_kind="procedural",
                 source_key="test:shout-rect",
             )
             prepared = PreparedBubble(
@@ -82,7 +82,7 @@ class RenderShoutRectTests(unittest.TestCase):
 
             self.assertTrue(output_path.exists())
 
-    def test_grouped_shout_rects_bypass_merged_vector_render(self) -> None:
+    def test_grouped_procedural_bubbles_use_merge_renderer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = Path(tmpdir) / "input.png"
             output_path = Path(tmpdir) / "output.png"
@@ -90,7 +90,7 @@ class RenderShoutRectTests(unittest.TestCase):
 
             bubble_asset = ResolvedBubbleAsset(
                 bubble_type="shout_rect_pointed_drop",
-                source_kind="svg",
+                source_kind="procedural",
                 source_key="test:shout-rect-group",
             )
             plans = [
@@ -127,6 +127,7 @@ class RenderShoutRectTests(unittest.TestCase):
                     )
                 )
             bubble_images = [Image.new("RGBA", (32, 36), (255, 255, 255, 255)) for _ in prepared_items]
+            merged_image = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
 
             with (
                 patch("bubble.render.resolve_resvg_executable", return_value="/bin/true"),
@@ -136,7 +137,7 @@ class RenderShoutRectTests(unittest.TestCase):
                     side_effect=[(item.bubble_layout, image) for item, image in zip(prepared_items, bubble_images, strict=True)],
                 ),
                 patch("bubble.render._group_bubbles_for_merge", side_effect=lambda items: [items]),
-                patch("bubble.render._render_merged_group_image", side_effect=AssertionError("merge path should not run")),
+                patch("bubble.render._render_merged_group_image", return_value=(merged_image, 0, 0)) as merged_group,
             ):
                 render_bubbles(
                     image_path=image_path,
@@ -154,6 +155,7 @@ class RenderShoutRectTests(unittest.TestCase):
                 )
 
             self.assertTrue(output_path.exists())
+            merged_group.assert_called_once()
 
 
 if __name__ == "__main__":

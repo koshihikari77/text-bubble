@@ -2,27 +2,21 @@
   "default_type": "ellipse",
   "types": {
     "ellipse": {
-      "kind": "static",
-      "path": "bubble_ellipse.svg"
+      "kind": "procedural",
+      "generator": "ellipse_panel"
     },
     "square": {
-      "kind": "static",
-      "path": "bubble_square.svg"
+      "kind": "procedural",
+      "generator": "ellipse_panel"
     },
     "narration": {
-      "kind": "static",
-      "path": "bubble_narration_square.svg"
+      "kind": "procedural",
+      "generator": "rect_panel"
     },
     "shout": {
       "kind": "procedural",
       "stroke_width": 2.5,
       "generator": "polygon_shout_panel",
-      "safe_inset": {
-        "left": 0.23,
-        "right": 0.23,
-        "top": 0.18,
-        "bottom": 0.18
-      },
       "params": {
         "view_box": [50, 50, 420, 660],
         "points": [
@@ -41,12 +35,6 @@
       "kind": "procedural",
       "stroke_width": 2.3,
       "generator": "bowed_rect_panel",
-      "safe_inset": {
-        "left": 0.18,
-        "right": 0.18,
-        "top": 0.2,
-        "bottom": 0.2
-      },
       "params": {
         "view_box": [0, 0, 360, 600],
         "inset_x": 60,
@@ -60,12 +48,6 @@
       "kind": "procedural",
       "stroke_width": 2.3,
       "generator": "pointed_rect_panel",
-      "safe_inset": {
-        "left": 0.15,
-        "right": 0.15,
-        "top": 0.17,
-        "bottom": 0.17
-      },
       "safe_padding": {
         "left": 0.4,
         "right": 0.4,
@@ -100,12 +82,6 @@
       "kind": "procedural",
       "stroke_width": 2.3,
       "generator": "pointed_rect_drop_panel",
-      "safe_inset": {
-        "left": 0.15,
-        "right": 0.15,
-        "top": 0.17,
-        "bottom": 0.17
-      },
       "safe_padding": {
         "left": 0.4,
         "right": 0.4,
@@ -140,12 +116,6 @@
       "kind": "procedural",
       "stroke_width": 2.3,
       "generator": "pointed_rect_kink_panel",
-      "safe_inset": {
-        "left": 0.15,
-        "right": 0.15,
-        "top": 0.17,
-        "bottom": 0.17
-      },
       "safe_padding": {
         "left": 0.4,
         "right": 0.4,
@@ -180,12 +150,6 @@
       "kind": "procedural",
       "stroke_width": 2.0,
       "generator": "directional_offset_hill",
-      "safe_inset": {
-        "left": 0.2,
-        "right": 0.2,
-        "top": 0.16,
-        "bottom": 0.16
-      },
       "params": {
         "view_box": [0, 0, 360, 600],
         "center_x": 180,
@@ -205,12 +169,6 @@
       "kind": "procedural",
       "stroke_width": 2.0,
       "generator": "directional_offset_hill",
-      "safe_inset": {
-        "left": 0.2,
-        "right": 0.2,
-        "top": 0.16,
-        "bottom": 0.16
-      },
       "params": {
         "view_box": [0, 0, 360, 600],
         "center_x": 180,
@@ -230,12 +188,6 @@
       "kind": "procedural",
       "stroke_width": 2.0,
       "generator": "polygon_wavy_panel",
-      "safe_inset": {
-        "left": 0.18,
-        "right": 0.18,
-        "top": 0.15,
-        "bottom": 0.15
-      },
       "params": {
         "view_box": [50, 50, 420, 660],
         "points": [

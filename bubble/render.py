@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 from bubble.assets import (
     ResolvedBubbleAsset,
     build_merged_bubble_svg_source,
+    build_merged_svg_source_from_svg_sources,
     build_bubble_svg_html,
     build_font_css,
     bubble_png_to_rgba,
@@ -76,6 +77,7 @@ class RenderedBubble:
     bubble_layout: dict[str, int]
     bubble_image: Image.Image
     bubble_asset: ResolvedBubbleAsset
+    local_text_bbox: tuple[int, int, int, int]
 
 
 @dataclass
@@ -495,7 +497,7 @@ def _bubble_cache_key(
     bubble_layout: dict[str, int] | None = None,
     local_text_bbox: tuple[int, int, int, int] | None = None,
 ) -> tuple[Any, ...]:
-    if bubble_asset.bubble_type.startswith("shout_rect") and bubble_layout is not None:
+    if bubble_asset.source_kind == "procedural" and bubble_layout is not None:
         return (
             bubble_renderer,
             bubble_asset.source_key,
@@ -504,6 +506,45 @@ def _bubble_cache_key(
             repr(bubble_layout.get("shape_layout")),
         )
     return bubble_renderer, bubble_asset.source_key, width, height
+
+
+def _resolve_bubble_svg_source(
+    *,
+    bubble_asset: ResolvedBubbleAsset,
+    bubble_width: int,
+    bubble_height: int,
+    bubble_layout: dict[str, int] | None,
+    local_text_bbox: tuple[int, int, int, int] | None,
+) -> str:
+    if bubble_asset.source_kind == "procedural":
+        if bubble_asset.generator is None:
+            raise RuntimeError("procedural bubble asset is missing generator")
+        procedural_params = dict(bubble_asset.params or {})
+        procedural_params.update(
+            {
+                "bubble_width": bubble_width,
+                "bubble_height": bubble_height,
+            }
+        )
+        if bubble_layout is not None:
+            procedural_params["shape_layout"] = bubble_layout.get("shape_layout")
+            for key in ("padding_left", "padding_right", "padding_top", "padding_bottom"):
+                if key in bubble_layout:
+                    procedural_params[key] = int(bubble_layout[key])
+        if local_text_bbox is not None:
+            procedural_params.update(
+                {
+                    "text_left": int(local_text_bbox[0]),
+                    "text_top": int(local_text_bbox[1]),
+                    "text_right": int(local_text_bbox[2]),
+                    "text_bottom": int(local_text_bbox[3]),
+                }
+            )
+        return generate_procedural_bubble_svg(bubble_asset.generator, procedural_params)
+    return warp_svg_source_to_aspect(
+        load_bubble_svg_source_from_asset(bubble_asset),
+        bubble_width / max(1, bubble_height),
+    )
 
 
 def _resolve_bubble_image(
@@ -540,31 +581,13 @@ def _resolve_bubble_image(
         cache[cache_key] = image
         return image
 
-    if bubble_asset.bubble_type.startswith("shout_rect") and bubble_asset.generator and bubble_asset.params is not None:
-        if bubble_layout is None or local_text_bbox is None:
-            raise RuntimeError("shout_rect bubble rendering requires bubble_layout and local_text_bbox")
-        procedural_params = dict(bubble_asset.params)
-        procedural_params.update(
-            {
-                "bubble_width": bubble_width,
-                "bubble_height": bubble_height,
-                "text_left": int(local_text_bbox[0]),
-                "text_top": int(local_text_bbox[1]),
-                "text_right": int(local_text_bbox[2]),
-                "text_bottom": int(local_text_bbox[3]),
-                "padding_left": int(bubble_layout["padding_left"]),
-                "padding_right": int(bubble_layout["padding_right"]),
-                "padding_top": int(bubble_layout["padding_top"]),
-                "padding_bottom": int(bubble_layout["padding_bottom"]),
-                "shape_layout": bubble_layout.get("shape_layout"),
-            }
-        )
-        bubble_svg = generate_procedural_bubble_svg(bubble_asset.generator, procedural_params)
-    else:
-        bubble_svg = warp_svg_source_to_aspect(
-            load_bubble_svg_source_from_asset(bubble_asset),
-            bubble_width / max(1, bubble_height),
-        )
+    bubble_svg = _resolve_bubble_svg_source(
+        bubble_asset=bubble_asset,
+        bubble_width=bubble_width,
+        bubble_height=bubble_height,
+        bubble_layout=bubble_layout,
+        local_text_bbox=local_text_bbox,
+    )
     if bubble_renderer == "resvg":
         if not resvg_executable:
             raise RuntimeError("resvg not found; install resvg or use --bubble-renderer browser")
@@ -682,19 +705,42 @@ def _render_merged_group_image(
     resvg_executable: str | None,
 ) -> tuple[Image.Image, int, int]:
     bubble_asset = group[0].bubble_asset
-    placements = [
-        {
-            "left": item.bubble_layout["bubble_left"],
-            "top": item.bubble_layout["bubble_top"],
-            "width": item.bubble_layout["bubble_width"],
-            "height": item.bubble_layout["bubble_height"],
-        }
-        for item in group
-    ]
-    merged_svg, left, top, width, height = build_merged_bubble_svg_source(
-        bubble_asset=bubble_asset,
-        placements=placements,
-    )
+    if bubble_asset.source_kind == "procedural":
+        placements = []
+        for item in group:
+            placements.append(
+                {
+                    "left": item.bubble_layout["bubble_left"],
+                    "top": item.bubble_layout["bubble_top"],
+                    "width": item.bubble_layout["bubble_width"],
+                    "height": item.bubble_layout["bubble_height"],
+                    "svg_source": _resolve_bubble_svg_source(
+                        bubble_asset=item.bubble_asset,
+                        bubble_width=item.bubble_layout["bubble_width"],
+                        bubble_height=item.bubble_layout["bubble_height"],
+                        bubble_layout=item.bubble_layout,
+                        local_text_bbox=item.local_text_bbox,
+                    ),
+                }
+            )
+        merged_svg, left, top, width, height = build_merged_svg_source_from_svg_sources(
+            placements=placements,
+            stroke_width=bubble_asset.stroke_width,
+        )
+    else:
+        placements = [
+            {
+                "left": item.bubble_layout["bubble_left"],
+                "top": item.bubble_layout["bubble_top"],
+                "width": item.bubble_layout["bubble_width"],
+                "height": item.bubble_layout["bubble_height"],
+            }
+            for item in group
+        ]
+        merged_svg, left, top, width, height = build_merged_bubble_svg_source(
+            bubble_asset=bubble_asset,
+            placements=placements,
+        )
     if bubble_renderer == "resvg":
         if not resvg_executable:
             raise RuntimeError("resvg not found; install resvg or use --bubble-renderer browser")
@@ -936,23 +982,14 @@ def render_bubbles(
                     bubble_layout=bubble_layout,
                     bubble_image=bubble_image,
                     bubble_asset=bubble_asset,
+                    local_text_bbox=prepared.local_text_bbox,
                 )
             )
 
         for group in _group_bubbles_for_merge(rendered_bubbles):
             group_asset = group[0].bubble_asset
-            is_shout_rect_group = group_asset.bubble_type.startswith("shout_rect")
-            use_vector_group_render = group_asset.source_kind == "svg" and not is_shout_rect_group
-            if is_shout_rect_group:
-                for item in group:
-                    alpha_composite_clipped(
-                        bubble_layer,
-                        item.bubble_image,
-                        item.bubble_layout["bubble_left"],
-                        item.bubble_layout["bubble_top"],
-                    )
-                continue
-            if len(group) == 1 and not use_vector_group_render:
+            use_vector_group_render = group_asset.source_kind in {"svg", "procedural"}
+            if len(group) == 1:
                 item = group[0]
                 alpha_composite_clipped(
                     bubble_layer,

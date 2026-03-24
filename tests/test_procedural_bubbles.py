@@ -151,6 +151,14 @@ class ProceduralBubbleTests(unittest.TestCase):
         assert second is not None
         self.assertNotEqual(first.source_key, second.source_key)
 
+    def test_builtin_default_like_assets_resolve_as_procedural(self) -> None:
+        for bubble_type in ("ellipse", "square", "narration", "wavy", "shout"):
+            asset = resolve_bubble_renderable_asset(None, bubble_type, variant_seed=11)
+            self.assertIsNotNone(asset)
+            assert asset is not None
+            self.assertEqual(asset.source_kind, "procedural")
+            self.assertIsNotNone(asset.generator)
+
     def test_shout_rect_cache_key_depends_on_shape_layout(self) -> None:
         asset = resolve_bubble_renderable_asset(None, "shout_rect_pointed_drop", variant_seed=11)
         self.assertIsNotNone(asset)
@@ -219,6 +227,114 @@ class ProceduralBubbleTests(unittest.TestCase):
         self.assertLess(layout["bubble_top"], layout["inner_bubble_top"])
         self.assertGreater(layout["bubble_right"], layout["inner_bubble_right"])
         self.assertGreater(layout["bubble_bottom"], layout["inner_bubble_bottom"])
+
+    def test_compute_bubble_layout_emits_generic_shape_layout_for_ellipse(self) -> None:
+        layout = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="ellipse",
+            variant_seed=7,
+            bubble_params=None,
+        )
+
+        self.assertIn("shape_layout", layout)
+        shape_layout = layout["shape_layout"]
+        self.assertEqual(shape_layout["kind"], "ellipse")
+        self.assertEqual(shape_layout["bubble_type"], "ellipse")
+        self.assertEqual(
+            shape_layout["view_box"],
+            [0.0, 0.0, float(layout["bubble_width"]), float(layout["bubble_height"])],
+        )
+        self.assertIn("path_d", shape_layout)
+
+    def test_compute_bubble_layout_emits_wavy_shape_layout_with_font_based_outer_frame(self) -> None:
+        params = {
+            "view_box": [0, 0, 360, 600],
+            "center_x": 180,
+            "center_y": 300,
+            "radius_x": 95,
+            "radius_y": 210,
+            "samples": 64,
+            "amp": 0.4,
+            "freq": 7,
+            "seed": 9,
+            "phase": 0.4,
+            "asymmetry": 0.15,
+            "radial_blend": 0.0,
+        }
+        layout = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="wavy",
+            variant_seed=7,
+            bubble_params=params,
+        )
+
+        shape_layout = layout["shape_layout"]
+        self.assertEqual(shape_layout["kind"], "directional_hill")
+        self.assertIn("path_d", shape_layout)
+        self.assertLess(layout["bubble_left"], layout["inner_bubble_left"])
+        self.assertLess(layout["bubble_top"], layout["inner_bubble_top"])
+        self.assertGreater(layout["bubble_right"], layout["inner_bubble_right"])
+        self.assertGreater(layout["bubble_bottom"], layout["inner_bubble_bottom"])
+        self.assertEqual(
+            shape_layout["bubble_box_bounds"],
+            [
+                float(layout["frame_padding_left"]),
+                float(layout["frame_padding_top"]),
+                float(layout["frame_padding_left"] + layout["inner_bubble_width"]),
+                float(layout["frame_padding_top"] + layout["inner_bubble_height"]),
+            ],
+        )
+
+    def test_wavy_shape_layout_phase_and_points_change_with_seed(self) -> None:
+        params = {
+            "view_box": [0, 0, 360, 600],
+            "center_x": 180,
+            "center_y": 300,
+            "radius_x": 95,
+            "radius_y": 210,
+            "samples": 64,
+            "amp": 0.4,
+            "freq": 7,
+            "seed": 9,
+            "phase": 0.4,
+            "asymmetry": 0.15,
+            "radial_blend": 0.0,
+        }
+        first = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="wavy",
+            variant_seed=7,
+            bubble_params=params,
+        )["shape_layout"]
+        second = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="wavy",
+            variant_seed=19,
+            bubble_params=params,
+        )["shape_layout"]
+
+        self.assertNotEqual(first["phase_shift"], second["phase_shift"])
+        self.assertNotEqual(first["points"][0], second["points"][0])
 
     def test_compute_bubble_layout_does_not_force_top_midpoint_count_from_variant(self) -> None:
         layout = compute_bubble_layout(

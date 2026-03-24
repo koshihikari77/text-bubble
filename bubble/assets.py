@@ -330,9 +330,8 @@ def resolve_bubble_renderable_asset(
                     params["seed"] = int(variant_seed)
                 return ResolvedBubbleAsset(
                     bubble_type=normalized_type,
-                    source_kind="svg",
+                    source_kind="procedural",
                     source_key=procedural_asset_key(entry.generator, params),
-                    svg_source=generate_procedural_bubble_svg(entry.generator, params),
                     generator=entry.generator,
                     params=copy.deepcopy(entry.params) if entry.params is not None else None,
                     safe_inset=copy.deepcopy(entry.safe_inset) if entry.safe_inset is not None else None,
@@ -726,44 +725,44 @@ def _pathops_matrix(
     ]
 
 
-def build_merged_bubble_svg_source(
+def build_merged_svg_source_from_svg_sources(
     *,
-    bubble_asset: ResolvedBubbleAsset,
-    placements: list[dict[str, int]],
+    placements: list[dict[str, object]],
+    stroke_width: float | None = None,
 ) -> tuple[str, int, int, int, int]:
     if not placements:
         raise RuntimeError("placements must be non-empty")
-    if bubble_asset.source_kind != "svg":
-        raise RuntimeError("merged bubble SVG requires an SVG bubble asset")
 
-    asset_svg = load_bubble_svg_source_from_asset(bubble_asset)
     request_paths: list[dict[str, object]] = []
     stroke_widths: list[float] = []
     for placement in placements:
+        svg_source = placement.get("svg_source")
+        if not isinstance(svg_source, str) or not svg_source.strip():
+            raise RuntimeError("merged bubble placement is missing svg_source")
         bubble_width = int(placement["width"])
         bubble_height = int(placement["height"])
         bubble_left = int(placement["left"])
         bubble_top = int(placement["top"])
-        warped_svg = warp_svg_source_to_aspect(asset_svg, bubble_width / max(1, bubble_height))
-        viewbox, path_specs, stroke_width = _extract_bubble_path_specs(warped_svg)
+        viewbox, path_specs, extracted_stroke_width = _extract_bubble_path_specs(svg_source)
         vb_x, vb_y, vb_w, vb_h = viewbox
         scale_x = bubble_width / max(vb_w, 1e-6)
         scale_y = bubble_height / max(vb_h, 1e-6)
-        stroke_widths.append(stroke_width)
-
+        stroke_widths.append(extracted_stroke_width)
         for d_value, source_matrix in path_specs:
-            request_paths.append({
-                "d": d_value,
-                "matrix": _pathops_matrix(
-                    source_matrix=source_matrix,
-                    vb_x=vb_x,
-                    vb_y=vb_y,
-                    scale_x=scale_x,
-                    scale_y=scale_y,
-                    bubble_left=bubble_left,
-                    bubble_top=bubble_top,
-                ),
-            })
+            request_paths.append(
+                {
+                    "d": d_value,
+                    "matrix": _pathops_matrix(
+                        source_matrix=source_matrix,
+                        vb_x=vb_x,
+                        vb_y=vb_y,
+                        scale_x=scale_x,
+                        scale_y=scale_y,
+                        bubble_left=bubble_left,
+                        bubble_top=bubble_top,
+                    ),
+                }
+            )
 
     if not request_paths:
         raise RuntimeError("failed to build merged bubble path request")
@@ -784,9 +783,7 @@ def build_merged_bubble_svg_source(
     path_pen = SVGPathPen(None)
     merged_path.draw(path_pen)
     left_bound, top_bound, right_bound, bottom_bound = merged_path.bounds
-    base_stroke_width = bubble_asset.stroke_width if bubble_asset.stroke_width is not None else (
-        sum(stroke_widths) / max(1, len(stroke_widths))
-    )
+    base_stroke_width = stroke_width if stroke_width is not None else (sum(stroke_widths) / max(1, len(stroke_widths)))
     stroke_width_px = max(0.75, base_stroke_width * MERGED_BUBBLE_STROKE_SCALE)
     min_x = float(left_bound)
     min_y = float(top_bound)
@@ -812,6 +809,40 @@ def build_merged_bubble_svg_source(
         fill-rule="nonzero" />
 </svg>"""
     return svg_source, left, top, width, height
+
+
+def build_merged_bubble_svg_source(
+    *,
+    bubble_asset: ResolvedBubbleAsset,
+    placements: list[dict[str, int]],
+) -> tuple[str, int, int, int, int]:
+    if not placements:
+        raise RuntimeError("placements must be non-empty")
+    if bubble_asset.source_kind != "svg":
+        raise RuntimeError("merged bubble SVG requires an SVG bubble asset")
+
+    asset_svg = load_bubble_svg_source_from_asset(bubble_asset)
+    svg_placements: list[dict[str, object]] = []
+    for placement in placements:
+        bubble_width = int(placement["width"])
+        bubble_height = int(placement["height"])
+        bubble_left = int(placement["left"])
+        bubble_top = int(placement["top"])
+        warped_svg = warp_svg_source_to_aspect(asset_svg, bubble_width / max(1, bubble_height))
+        svg_placements.append(
+            {
+                "left": bubble_left,
+                "top": bubble_top,
+                "width": bubble_width,
+                "height": bubble_height,
+                "svg_source": warped_svg,
+            }
+        )
+
+    return build_merged_svg_source_from_svg_sources(
+        placements=svg_placements,
+        stroke_width=bubble_asset.stroke_width,
+    )
 
 
 def render_svg_with_resvg(
