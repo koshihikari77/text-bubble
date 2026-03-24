@@ -267,6 +267,264 @@ def _rect_path(*, left: float, top: float, right: float, bottom: float) -> str:
     )
 
 
+def _point_in_rect(point: tuple[float, float], rect: tuple[float, float, float, float]) -> bool:
+    x, y = point
+    left, top, right, bottom = rect
+    return left < x < right and top < y < bottom
+
+
+def _segment_hits_rect(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    rect: tuple[float, float, float, float],
+) -> bool:
+    if _point_in_rect(start, rect) or _point_in_rect(end, rect):
+        return True
+    left, top, right, bottom = rect
+    rect_edges = [
+        ((left, top), (right, top)),
+        ((right, top), (right, bottom)),
+        ((right, bottom), (left, bottom)),
+        ((left, bottom), (left, top)),
+    ]
+    return any(_segments_intersect(start, end, edge_start, edge_end) for edge_start, edge_end in rect_edges)
+
+
+def _polygon_edges_hit_rect(
+    points: list[tuple[float, float]],
+    rect: tuple[float, float, float, float],
+) -> bool:
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        if _segment_hits_rect(start, end, rect):
+            return True
+    return False
+
+
+def _generated_shout_points_from_text_rect(
+    *,
+    text_rect: tuple[float, float, float, float],
+    outline_width: int,
+    font_size: int,
+    seed: int | None,
+    safe_padding: float,
+) -> tuple[list[tuple[float, float]], tuple[float, float, float, float]]:
+    rng = _shout_rect_rng(seed)
+    if rng is None:
+        raise RuntimeError("shout generation requires deterministic seed")
+
+    text_left, text_top, text_right, text_bottom = text_rect
+    protect_pad = max(1.0, float(font_size) * safe_padding)
+    protect_rect = (
+        text_left - protect_pad,
+        text_top - protect_pad,
+        text_right + protect_pad,
+        text_bottom + protect_pad,
+    )
+    protect_left, protect_top, protect_right, protect_bottom = protect_rect
+    text_width = text_right - text_left
+    text_height = text_bottom - text_top
+    text_center_x = (text_left + text_right) / 2.0
+    protect_center_x = (protect_left + protect_right) / 2.0
+    protect_half_width = (protect_right - protect_left) / 2.0
+
+    def _sample(lo: float, hi: float) -> float:
+        if hi < lo:
+            lo, hi = hi, lo
+        if abs(hi - lo) <= 1e-6:
+            return lo
+        return rng.uniform(lo, hi)
+
+    for _ in range(32):
+        top_bias = rng.choice((-1.0, 1.0)) * rng.uniform(text_width * 0.12, text_width * 0.24)
+        top_x = _clamp(
+            text_center_x + top_bias,
+            protect_left + text_width * 0.06,
+            protect_right - text_width * 0.06,
+        )
+        top_y = protect_top - _sample(float(font_size) * 1.35, float(font_size) * 2.05)
+        top_point = (top_x, top_y)
+        upper_dx = _sample(
+            protect_half_width + float(font_size) * 1.10,
+            protect_half_width + float(font_size) * 1.55,
+        )
+        upper_right_min_y = max(top_y + float(font_size) * 0.55, protect_top - float(font_size) * 0.10)
+        upper_right_max_y = min(text_top + text_height * 0.48, text_bottom - 1.0)
+        upper_left_min_y = max(top_y + float(font_size) * 0.42, protect_top - float(font_size) * 0.08)
+        upper_left_max_y = min(text_top + text_height * 0.62, text_bottom - 1.0)
+        upper_height_delta = rng.uniform(float(font_size) * 0.95, float(font_size) * 1.45)
+        if rng.random() < 0.5:
+            high_y = _sample(upper_right_min_y, max(upper_right_min_y, upper_right_max_y - upper_height_delta * 0.20))
+            low_y = min(upper_left_max_y, high_y + upper_height_delta)
+            upper_right = (protect_center_x + upper_dx, high_y)
+            upper_left = (protect_center_x - upper_dx, low_y)
+        else:
+            high_y = _sample(upper_left_min_y, max(upper_left_min_y, upper_left_max_y - upper_height_delta * 0.20))
+            low_y = min(upper_right_max_y, high_y + upper_height_delta)
+            upper_left = (protect_center_x - upper_dx, high_y)
+            upper_right = (protect_center_x + upper_dx, low_y)
+        lower_band_min_y = protect_bottom + float(font_size) * 0.14
+        lower_band_max_y = protect_bottom + float(font_size) * 1.80
+        lower_dx = _sample(
+            protect_half_width + 0.5,
+            protect_half_width + float(font_size) * 0.18,
+        )
+        lower_shallow_y = _sample(
+            lower_band_min_y,
+            min(lower_band_max_y, lower_band_min_y + float(font_size) * 0.20),
+        )
+        lower_deep_y = _sample(
+            max(lower_shallow_y + float(font_size) * 0.95, lower_band_max_y - float(font_size) * 0.22),
+            lower_band_max_y,
+        )
+        lower_right = (protect_center_x + lower_dx, lower_shallow_y)
+        lower_left = (protect_center_x - lower_dx, lower_shallow_y)
+        lower_inward_shift = rng.uniform(float(font_size) * 0.45, float(font_size) * 0.92)
+        if rng.random() < 0.5:
+            lower_right = (
+                max(protect_right + 0.5, lower_right[0] - lower_inward_shift),
+                lower_deep_y,
+            )
+        else:
+            lower_left = (
+                min(protect_left - 0.5, lower_left[0] + lower_inward_shift),
+                lower_deep_y,
+            )
+        top_point = (top_point[0], min(top_point[1], protect_top - 0.5))
+        upper_right = (max(upper_right[0], protect_right + 0.5), _clamp(upper_right[1], top_y + 0.5, text_bottom - 1.0))
+        lower_right = (max(lower_right[0], protect_right + 0.5), max(lower_right[1], protect_bottom + 0.5))
+        lower_left = (min(lower_left[0], protect_left - 0.5), max(lower_left[1], protect_bottom + 0.5))
+        upper_left = (min(upper_left[0], protect_left - 0.5), _clamp(upper_left[1], top_y + 0.5, text_bottom - 1.0))
+        candidate = [
+            top_point,
+            upper_right,
+            lower_right,
+            lower_left,
+            upper_left,
+        ]
+        if _find_self_intersections(candidate):
+            continue
+        if _polygon_edges_hit_rect(candidate, protect_rect):
+            continue
+        return candidate, protect_rect
+
+    fallback_center_x = protect_center_x
+    fallback_top_bias = rng.choice((-1.0, 1.0)) * min(max(text_width * 0.12, 8.0), text_width * 0.22)
+    fallback_top_x = _clamp(
+        fallback_center_x + fallback_top_bias,
+        protect_left + text_width * 0.08,
+        protect_right - text_width * 0.08,
+    )
+    fallback_upper_dx = protect_half_width + float(font_size) * 1.22
+    fallback_lower_dx = protect_half_width + float(font_size) * 0.10
+    fallback_upper_base_y = protect_top + float(font_size) * 0.12
+    fallback_upper_delta = float(font_size) * 0.46
+    if rng.random() < 0.5:
+        fallback_upper_right_y = fallback_upper_base_y
+        fallback_upper_left_y = min(text_bottom - 1.0, fallback_upper_base_y + max(float(font_size) * 1.0, fallback_upper_delta * 2.4))
+    else:
+        fallback_upper_left_y = fallback_upper_base_y
+        fallback_upper_right_y = min(text_bottom - 1.0, fallback_upper_base_y + max(float(font_size) * 1.0, fallback_upper_delta * 2.4))
+    if rng.random() < 0.5:
+        fallback_lower_right = (
+            fallback_center_x + max(protect_right - fallback_center_x + 0.5, fallback_lower_dx - float(font_size) * 0.40),
+            protect_bottom + float(font_size) * 1.55,
+        )
+        fallback_lower_left = (
+            fallback_center_x - fallback_lower_dx,
+            protect_bottom + float(font_size) * 0.22,
+        )
+    else:
+        fallback_lower_right = (
+            fallback_center_x + fallback_lower_dx,
+            protect_bottom + float(font_size) * 0.22,
+        )
+        fallback_lower_left = (
+            fallback_center_x - max(protect_right - fallback_center_x + 0.5, fallback_lower_dx - float(font_size) * 0.40),
+            protect_bottom + float(font_size) * 1.55,
+        )
+    fallback = [
+        (fallback_top_x, protect_top - float(font_size) * 1.50),
+        (fallback_center_x + fallback_upper_dx, fallback_upper_right_y),
+        fallback_lower_right,
+        fallback_lower_left,
+        (fallback_center_x - fallback_upper_dx, fallback_upper_left_y),
+    ]
+    return fallback, protect_rect
+
+
+def _shout_shape_from_text_rect(
+    *,
+    text_rect: tuple[int, int, int, int],
+    outline_width: int,
+    font_size: int,
+    seed: int | None,
+    curve_depth: float,
+    curved_edges: list[int],
+    safe_padding_em: float,
+) -> dict[str, Any]:
+    points_global, protect_rect = _generated_shout_points_from_text_rect(
+        text_rect=tuple(float(v) for v in text_rect),
+        outline_width=outline_width,
+        font_size=font_size,
+        seed=seed,
+        safe_padding=safe_padding_em,
+    )
+    inset = _shape_layout_stroke_inset(outline_width)
+    min_x = min(min(x for x, _ in points_global), protect_rect[0], float(text_rect[0])) - inset
+    min_y = min(min(y for _, y in points_global), protect_rect[1], float(text_rect[1])) - inset
+    max_x = max(max(x for x, _ in points_global), protect_rect[2], float(text_rect[2])) + inset
+    max_y = max(max(y for _, y in points_global), protect_rect[3], float(text_rect[3])) + inset
+    bubble_left = int(math.floor(min_x))
+    bubble_top = int(math.floor(min_y))
+    bubble_right = int(math.ceil(max_x))
+    bubble_bottom = int(math.ceil(max_y))
+    bubble_width = max(1, bubble_right - bubble_left)
+    bubble_height = max(1, bubble_bottom - bubble_top)
+    local_points = [(x - bubble_left, y - bubble_top) for x, y in points_global]
+    local_text_box = [
+        float(text_rect[0] - bubble_left),
+        float(text_rect[1] - bubble_top),
+        float(text_rect[2] - bubble_left),
+        float(text_rect[3] - bubble_top),
+    ]
+    center_x = bubble_width / 2.0
+    center_y = bubble_height / 2.0
+    return {
+        "bubble_left": bubble_left,
+        "bubble_top": bubble_top,
+        "bubble_right": bubble_right,
+        "bubble_bottom": bubble_bottom,
+        "bubble_width": bubble_width,
+        "bubble_height": bubble_height,
+        "shape_layout": {
+            "kind": "polygon_shout",
+            "bubble_type": "shout",
+            "view_box": _shape_layout_view_box(bubble_width, bubble_height),
+            "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+            "text_box_bounds": local_text_box,
+            "protect_box_bounds": [
+                float(protect_rect[0] - bubble_left),
+                float(protect_rect[1] - bubble_top),
+                float(protect_rect[2] - bubble_left),
+                float(protect_rect[3] - bubble_top),
+            ],
+            "points": [[float(x), float(y)] for x, y in local_points],
+            "curved_edges": curved_edges,
+            "curve_depth": curve_depth,
+            "center_x": center_x,
+            "center_y": center_y,
+            "path_d": _curved_polygon_path(
+                local_points,
+                center_x=center_x,
+                center_y=center_y,
+                curve_depth=curve_depth,
+                curved_edges=curved_edges,
+            ),
+        },
+    }
+
+
 def _generic_generator_shape_layout(
     *,
     bubble_type: str,
@@ -277,6 +535,7 @@ def _generic_generator_shape_layout(
     variant_seed: int | None,
     bubble_params: dict[str, Any] | None,
     bubble_box_local: tuple[int, int, int, int] | None = None,
+    text_box_local: tuple[int, int, int, int] | None = None,
 ) -> dict[str, Any] | None:
     view_box = _shape_layout_view_box(bubble_width, bubble_height)
     if bubble_type in {"ellipse", "square"}:
@@ -324,6 +583,7 @@ def _generic_generator_shape_layout(
         )
         scale_x = bubble_width / max(vb_w, 1e-6)
         scale_y = bubble_height / max(vb_h, 1e-6)
+        inset = _shape_layout_stroke_inset(outline_width)
         if bubble_type in {"shout", "wavy_polygon"}:
             points = []
             for raw_x, raw_y in source.get("points", []):
@@ -332,6 +592,17 @@ def _generic_generator_shape_layout(
             center_x = bubble_width / 2.0
             center_y = bubble_height / 2.0
             if bubble_type == "shout":
+                points_t = _generated_shout_points(
+                    raw_points=points_t,
+                    bubble_width=bubble_width,
+                    bubble_height=bubble_height,
+                    outline_width=outline_width,
+                    font_size=font_size,
+                    seed=variant_seed,
+                    bubble_box_local=bubble_box_local,
+                    text_box_local=text_box_local,
+                )
+                points = [[float(x), float(y)] for x, y in points_t]
                 curved_edges = [int(value) for value in source.get("curved_edges", [])]
                 curve_depth = float(source.get("curve_depth", 0.06))
                 return {
@@ -339,6 +610,11 @@ def _generic_generator_shape_layout(
                     "bubble_type": bubble_type,
                     "view_box": view_box,
                     "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
+                    "text_box_bounds": (
+                        [float(value) for value in text_box_local]
+                        if text_box_local is not None
+                        else None
+                    ),
                     "points": points,
                     "curved_edges": curved_edges,
                     "curve_depth": curve_depth,
@@ -1497,6 +1773,13 @@ def compute_bubble_layout(
     text_left, text_top, text_right, text_bottom = text_bbox
     text_width = text_right - text_left
     text_height = text_bottom - text_top
+    if bubble_type == "shout" and safe_padding is None:
+        safe_padding = {
+            "left": 0.20,
+            "right": 0.20,
+            "top": 0.20,
+            "bottom": 0.20,
+        }
     em = max(font_size, 24)
     horizontal_padding = max(outline_width * 6, int(round(em * 1.35)))
     vertical_padding = max(outline_width * 4, int(round(em * 1.0)))
@@ -1558,7 +1841,37 @@ def compute_bubble_layout(
         "padding_bottom": padding_bottom,
         "outline_width": outline_width,
     }
-    if bubble_type in {"wavy", "wavy_fine"}:
+    if bubble_type == "shout":
+        source = dict(bubble_params or {})
+        curved_edges = [int(value) for value in source.get("curved_edges", [])]
+        curve_depth = float(source.get("curve_depth", 0.06))
+        shout_shape = _shout_shape_from_text_rect(
+            text_rect=text_bbox,
+            outline_width=outline_width,
+            font_size=font_size,
+            seed=variant_seed,
+            curve_depth=curve_depth,
+            curved_edges=curved_edges,
+            safe_padding_em=float((safe_padding or {}).get("left", 0.20)),
+        )
+        bubble_left = shout_shape["bubble_left"]
+        bubble_top = shout_shape["bubble_top"]
+        bubble_right = shout_shape["bubble_right"]
+        bubble_bottom = shout_shape["bubble_bottom"]
+        bubble_width = shout_shape["bubble_width"]
+        bubble_height = shout_shape["bubble_height"]
+        layout.update(
+            {
+                "bubble_left": bubble_left,
+                "bubble_top": bubble_top,
+                "bubble_right": bubble_right,
+                "bubble_bottom": bubble_bottom,
+                "bubble_width": bubble_width,
+                "bubble_height": bubble_height,
+                "shape_layout": shout_shape["shape_layout"],
+            }
+        )
+    elif bubble_type in {"wavy", "wavy_fine"}:
         frame_pad_left = int(round(float(font_size) * 0.72))
         frame_pad_right = int(round(float(font_size) * 0.72))
         frame_pad_top = int(round(float(font_size) * 0.98))

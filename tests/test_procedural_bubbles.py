@@ -6,7 +6,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from bubble.assets import resolve_bubble_renderable_asset
-from bubble.layout import compute_bubble_layout
+from bubble.layout import _find_self_intersections, _polygon_edges_hit_rect, compute_bubble_layout
 from bubble.procedural_bubbles import _build_direct_shout_rect_geometry, generate_procedural_bubble_svg
 from bubble.render import _bubble_cache_key
 
@@ -158,6 +158,84 @@ class ProceduralBubbleTests(unittest.TestCase):
             assert asset is not None
             self.assertEqual(asset.source_kind, "procedural")
             self.assertIsNotNone(asset.generator)
+
+    def test_shout_shape_layout_points_change_with_seed_without_self_intersection(self) -> None:
+        params = {
+            "view_box": [50, 50, 420, 660],
+            "points": [
+                [286.0, 122.0],
+                [378.0, 262.0],
+                [346.0, 496.0],
+                [262.0, 668.0],
+                [190.0, 506.0],
+                [166.0, 288.0],
+            ],
+            "curved_edges": [1, 2, 4, 5],
+            "curve_depth": 0.06,
+        }
+        first = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="shout",
+            variant_seed=7,
+            bubble_params=params,
+        )["shape_layout"]
+        second = compute_bubble_layout(
+            canvas_width=400,
+            canvas_height=500,
+            text_bbox=(120, 80, 240, 300),
+            text_layout={"outline_width": 3},
+            font_size=22,
+            outline_width=3,
+            bubble_type="shout",
+            variant_seed=19,
+            bubble_params=params,
+        )["shape_layout"]
+
+        self.assertEqual(first["kind"], "polygon_shout")
+        self.assertEqual(len(first["points"]), 5)
+        self.assertEqual(len(second["points"]), 5)
+        self.assertNotEqual(first["points"], second["points"])
+        self.assertNotEqual(first["path_d"], second["path_d"])
+
+        for shape_layout in (first, second):
+            points = [tuple(point) for point in shape_layout["points"]]
+            self.assertEqual(len(points), 5)
+            self.assertFalse(_find_self_intersections(points))
+            bubble_box = tuple(shape_layout["bubble_box_bounds"])
+            text_box = tuple(shape_layout["text_box_bounds"])
+            self.assertFalse(_polygon_edges_hit_rect(points, text_box))
+            inner_left, inner_top, inner_right, inner_bottom = bubble_box
+            text_left, text_top, text_right, text_bottom = text_box
+            top, upper_right, lower_right, lower_left, upper_left = points
+            self.assertLess(top[1], text_top)
+            self.assertGreater(upper_right[0], text_right)
+            self.assertGreater(upper_right[1], top[1])
+            self.assertLess(upper_right[1], lower_right[1])
+            self.assertGreater(lower_right[0], text_right)
+            self.assertGreater(lower_right[1], text_bottom)
+            self.assertLess(lower_left[0], text_left)
+            self.assertGreater(lower_left[1], text_bottom)
+            self.assertLess(upper_left[0], text_left)
+            self.assertGreater(upper_left[1], top[1])
+            self.assertLess(upper_left[1], lower_left[1])
+            self.assertLess(lower_right[0], upper_right[0])
+            self.assertGreater(lower_left[0], upper_left[0])
+            self.assertGreater(abs(upper_right[1] - upper_left[1]), 0.25)
+            center_x = (inner_left + inner_right) / 2.0
+            self.assertGreater(abs(upper_right[0] - center_x), abs(lower_right[0] - center_x))
+            self.assertGreater(abs(upper_left[0] - center_x), abs(lower_left[0] - center_x))
+            self.assertGreater(abs(lower_right[1] - lower_left[1]), 0.25)
+            self.assertFalse(
+                any(
+                    math.isnan(x) or math.isnan(y)
+                    for x, y in points
+                )
+            )
 
     def test_shout_rect_cache_key_depends_on_shape_layout(self) -> None:
         asset = resolve_bubble_renderable_asset(None, "shout_rect_pointed_drop", variant_seed=11)
