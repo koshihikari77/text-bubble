@@ -258,6 +258,18 @@ def _ellipse_path(*, cx: float, cy: float, rx: float, ry: float) -> str:
     )
 
 
+def _superellipse_path(*, cx: float, cy: float, rx: float, ry: float, exponent: float, samples: int = 48) -> str:
+    points: list[tuple[float, float]] = []
+    for index in range(samples):
+        theta = 2.0 * math.pi * index / samples
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        x = cx + rx * math.copysign(abs(cos_t) ** (2.0 / exponent), cos_t)
+        y = cy + ry * math.copysign(abs(sin_t) ** (2.0 / exponent), sin_t)
+        points.append((x, y))
+    return _closed_catmull_rom_path(points, tension=0.82)
+
+
 def _rect_path(*, left: float, top: float, right: float, bottom: float) -> str:
     return (
         f"M {left:.3f} {top:.3f} "
@@ -544,6 +556,19 @@ def _generic_generator_shape_layout(
         cy = bubble_height / 2.0
         rx = max(2.0, bubble_width / 2.0 - inset)
         ry = max(2.0, bubble_height / 2.0 - inset)
+        if bubble_type == "ellipse":
+            exponent = 2.7
+            path_d = _superellipse_path(
+                cx=cx,
+                cy=cy,
+                rx=rx,
+                ry=ry,
+                exponent=exponent,
+                samples=56,
+            )
+        else:
+            exponent = None
+            path_d = _ellipse_path(cx=cx, cy=cy, rx=rx, ry=ry)
         return {
             "kind": "ellipse",
             "bubble_type": bubble_type,
@@ -553,7 +578,8 @@ def _generic_generator_shape_layout(
             "center_y": cy,
             "radius_x": rx,
             "radius_y": ry,
-            "path_d": _ellipse_path(cx=cx, cy=cy, rx=rx, ry=ry),
+            "superellipse_exponent": exponent,
+            "path_d": path_d,
         }
     elif bubble_type == "narration":
         inset = _shape_layout_stroke_inset(outline_width)

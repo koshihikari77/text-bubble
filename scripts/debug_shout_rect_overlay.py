@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -56,6 +57,32 @@ def _sample_shape_outline(shape_layout: dict[str, object], *, steps: int = 32) -
     points = shape_layout.get("points")
     if isinstance(points, list) and points:
         return [tuple(point) for point in points]
+    if shape_layout.get("kind") == "ellipse":
+        cx = float(shape_layout["center_x"])
+        cy = float(shape_layout["center_y"])
+        rx = float(shape_layout["radius_x"])
+        ry = float(shape_layout["radius_y"])
+        exponent = shape_layout.get("superellipse_exponent")
+        sampled: list[tuple[float, float]] = []
+        for index in range(steps * 2):
+            theta = 2.0 * math.pi * index / (steps * 2)
+            cos_t = math.cos(theta)
+            sin_t = math.sin(theta)
+            if exponent is None:
+                x = cx + rx * cos_t
+                y = cy + ry * sin_t
+            else:
+                exp = float(exponent)
+                x = cx + rx * (1.0 if cos_t >= 0 else -1.0) * (abs(cos_t) ** (2.0 / exp))
+                y = cy + ry * (1.0 if sin_t >= 0 else -1.0) * (abs(sin_t) ** (2.0 / exp))
+            sampled.append((x, y))
+        return sampled
+    if shape_layout.get("kind") == "rect":
+        left = float(shape_layout["left"])
+        top = float(shape_layout["top"])
+        right = float(shape_layout["right"])
+        bottom = float(shape_layout["bottom"])
+        return [(left, top), (right, top), (right, bottom), (left, bottom)]
     corners = [tuple(point) for point in shape_layout["corners"]]
     sampled: list[tuple[float, float]] = [corners[0]]
     for edge_index, edge in enumerate(shape_layout["edges"]):

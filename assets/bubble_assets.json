@@ -3,7 +3,13 @@
   "types": {
     "ellipse": {
       "kind": "procedural",
-      "generator": "ellipse_panel"
+      "generator": "ellipse_panel",
+      "safe_padding": {
+        "left": 1.6,
+        "right": 1.6,
+        "top": 1.2,
+        "bottom": 1.2
+      }
     },
     "square": {
       "kind": "procedural",
