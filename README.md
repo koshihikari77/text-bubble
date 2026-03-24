@@ -84,8 +84,8 @@ apt-get install -y resvg
 
 - `scene.json` / `plan.json` の各 bubble は任意で `bubble_type` を持てる
 - 未指定時は `ellipse`
-- 組み込みタイプは `ellipse`, `square`, `narration`, `shout`, `wavy`, `wavy_fine`, `wavy_polygon`
-- `ellipse` / `square` / `narration` は static SVG、`shout` / `wavy*` は procedural 生成
+- 組み込みタイプは `ellipse`, `narration`, `shout`, `shout_polygon`, `wavy`, `wavy_fine`
+- すべて procedural 生成
 - 対応表は `assets/bubble_assets.json`
 - manifest の各 type は `kind: static` または `kind: procedural` を持てる
 

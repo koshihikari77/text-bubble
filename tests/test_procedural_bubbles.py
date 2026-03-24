@@ -141,9 +141,9 @@ class ProceduralBubbleTests(unittest.TestCase):
                 text_bottom=text_bottom,
             )
 
-    def test_kink_variant_seed_changes_source_key(self) -> None:
-        first = resolve_bubble_renderable_asset(None, "shout_rect_pointed_kink", variant_seed=11)
-        second = resolve_bubble_renderable_asset(None, "shout_rect_pointed_kink", variant_seed=19)
+    def test_shout_variant_seed_changes_source_key(self) -> None:
+        first = resolve_bubble_renderable_asset(None, "shout", variant_seed=11)
+        second = resolve_bubble_renderable_asset(None, "shout", variant_seed=19)
 
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
@@ -152,14 +152,14 @@ class ProceduralBubbleTests(unittest.TestCase):
         self.assertNotEqual(first.source_key, second.source_key)
 
     def test_builtin_default_like_assets_resolve_as_procedural(self) -> None:
-        for bubble_type in ("ellipse", "square", "narration", "wavy", "shout"):
+        for bubble_type in ("ellipse", "narration", "wavy", "wavy_fine", "shout", "shout_polygon"):
             asset = resolve_bubble_renderable_asset(None, bubble_type, variant_seed=11)
             self.assertIsNotNone(asset)
             assert asset is not None
             self.assertEqual(asset.source_kind, "procedural")
             self.assertIsNotNone(asset.generator)
 
-    def test_shout_shape_layout_points_change_with_seed_without_self_intersection(self) -> None:
+    def test_shout_polygon_shape_layout_points_change_with_seed_without_self_intersection(self) -> None:
         params = {
             "view_box": [50, 50, 420, 660],
             "points": [
@@ -180,7 +180,7 @@ class ProceduralBubbleTests(unittest.TestCase):
             text_layout={"outline_width": 3},
             font_size=22,
             outline_width=3,
-            bubble_type="shout",
+            bubble_type="shout_polygon",
             variant_seed=7,
             bubble_params=params,
         )["shape_layout"]
@@ -191,7 +191,7 @@ class ProceduralBubbleTests(unittest.TestCase):
             text_layout={"outline_width": 3},
             font_size=22,
             outline_width=3,
-            bubble_type="shout",
+            bubble_type="shout_polygon",
             variant_seed=19,
             bubble_params=params,
         )["shape_layout"]
@@ -422,7 +422,7 @@ class ProceduralBubbleTests(unittest.TestCase):
             text_layout={"outline_width": 3},
             font_size=22,
             outline_width=3,
-            bubble_type="shout_rect_pointed_kink",
+            bubble_type="shout",
             variant_seed=7,
             bubble_params={
                 "pull": 0.78,
@@ -453,7 +453,7 @@ class ProceduralBubbleTests(unittest.TestCase):
             text_layout={"outline_width": 3},
             font_size=22,
             outline_width=3,
-            bubble_type="shout_rect_pointed_kink",
+            bubble_type="shout",
             variant_seed=7,
             bubble_params={
                 "pull": 0.78,
@@ -511,7 +511,7 @@ class ProceduralBubbleTests(unittest.TestCase):
             text_layout={"outline_width": 3},
             font_size=22,
             outline_width=3,
-            bubble_type="shout_rect_pointed_kink",
+            bubble_type="shout",
             variant_seed=7,
             bubble_params={
                 "pull": 0.78,

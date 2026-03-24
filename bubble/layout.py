@@ -14,12 +14,10 @@ from bubble.vertical_uax import classify_text_clusters
 DEFAULT_TEXT_LETTER_SPACING_PX = -1.0
 GENERIC_PROCEDURAL_BUBBLE_TYPES = {
     "ellipse",
-    "square",
     "narration",
-    "shout",
+    "shout_polygon",
     "wavy",
     "wavy_fine",
-    "wavy_polygon",
 }
 
 
@@ -550,25 +548,21 @@ def _generic_generator_shape_layout(
     text_box_local: tuple[int, int, int, int] | None = None,
 ) -> dict[str, Any] | None:
     view_box = _shape_layout_view_box(bubble_width, bubble_height)
-    if bubble_type in {"ellipse", "square"}:
+    if bubble_type == "ellipse":
         inset = _shape_layout_stroke_inset(outline_width)
         cx = bubble_width / 2.0
         cy = bubble_height / 2.0
         rx = max(2.0, bubble_width / 2.0 - inset)
         ry = max(2.0, bubble_height / 2.0 - inset)
-        if bubble_type == "ellipse":
-            exponent = 2.7
-            path_d = _superellipse_path(
-                cx=cx,
-                cy=cy,
-                rx=rx,
-                ry=ry,
-                exponent=exponent,
-                samples=56,
-            )
-        else:
-            exponent = None
-            path_d = _ellipse_path(cx=cx, cy=cy, rx=rx, ry=ry)
+        exponent = 2.7
+        path_d = _superellipse_path(
+            cx=cx,
+            cy=cy,
+            rx=rx,
+            ry=ry,
+            exponent=exponent,
+            samples=56,
+        )
         return {
             "kind": "ellipse",
             "bubble_type": bubble_type,
@@ -598,7 +592,7 @@ def _generic_generator_shape_layout(
             "bottom": bottom,
             "path_d": _rect_path(left=left, top=top, right=right, bottom=bottom),
         }
-    elif bubble_type in {"shout", "wavy_polygon", "wavy", "wavy_fine"}:
+    elif bubble_type in {"shout_polygon", "wavy", "wavy_fine"}:
         source = dict(bubble_params or {})
         raw_view_box = source.get("view_box", [0, 0, bubble_width, bubble_height])
         vb_x, vb_y, vb_w, vb_h = (
@@ -610,74 +604,35 @@ def _generic_generator_shape_layout(
         scale_x = bubble_width / max(vb_w, 1e-6)
         scale_y = bubble_height / max(vb_h, 1e-6)
         inset = _shape_layout_stroke_inset(outline_width)
-        if bubble_type in {"shout", "wavy_polygon"}:
+        if bubble_type == "shout_polygon":
             points = []
             for raw_x, raw_y in source.get("points", []):
                 points.append([_scale_x(float(raw_x), vb_x, scale_x), _scale_y(float(raw_y), vb_y, scale_y)])
             points_t = [(float(x), float(y)) for x, y in points]
             center_x = bubble_width / 2.0
             center_y = bubble_height / 2.0
-            if bubble_type == "shout":
-                points_t = _generated_shout_points(
-                    raw_points=points_t,
-                    bubble_width=bubble_width,
-                    bubble_height=bubble_height,
-                    outline_width=outline_width,
-                    font_size=font_size,
-                    seed=variant_seed,
-                    bubble_box_local=bubble_box_local,
-                    text_box_local=text_box_local,
-                )
-                points = [[float(x), float(y)] for x, y in points_t]
-                curved_edges = [int(value) for value in source.get("curved_edges", [])]
-                curve_depth = float(source.get("curve_depth", 0.06))
-                return {
-                    "kind": "polygon_shout",
-                    "bubble_type": bubble_type,
-                    "view_box": view_box,
-                    "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
-                    "text_box_bounds": (
-                        [float(value) for value in text_box_local]
-                        if text_box_local is not None
-                        else None
-                    ),
-                    "points": points,
-                    "curved_edges": curved_edges,
-                    "curve_depth": curve_depth,
-                    "center_x": center_x,
-                    "center_y": center_y,
-                    "path_d": _curved_polygon_path(
-                        points_t,
-                        center_x=center_x,
-                        center_y=center_y,
-                        curve_depth=curve_depth,
-                        curved_edges=curved_edges,
-                    ),
-                }
-            round_ratio = float(source.get("round_ratio", 0.14))
-            bulge_scale = min(scale_x, scale_y)
-            edge_bulge = [float(value) * bulge_scale for value in source.get("edge_bulge", [])]
-            tension = float(source.get("tension", 0.72))
-            expanded_points = _rounded_bulged_points(
-                points_t,
-                center_x=center_x,
-                center_y=center_y,
-                round_ratio=round_ratio,
-                edge_bulge=edge_bulge,
-            )
             return {
-                "kind": "polygon_wavy",
+                "kind": "polygon_shout",
                 "bubble_type": bubble_type,
                 "view_box": view_box,
                 "bubble_box_bounds": [0.0, 0.0, float(bubble_width), float(bubble_height)],
                 "points": points,
-                "expanded_points": [[float(x), float(y)] for x, y in expanded_points],
-                "round_ratio": round_ratio,
-                "edge_bulge": edge_bulge,
-                "tension": tension,
+                "text_box_bounds": (
+                    [float(value) for value in text_box_local]
+                    if text_box_local is not None
+                    else None
+                ),
+                "curved_edges": [int(value) for value in source.get("curved_edges", [])],
+                "curve_depth": float(source.get("curve_depth", 0.06)),
                 "center_x": center_x,
                 "center_y": center_y,
-                "path_d": _closed_catmull_rom_path(expanded_points, tension=tension),
+                "path_d": _curved_polygon_path(
+                    points_t,
+                    center_x=center_x,
+                    center_y=center_y,
+                    curve_depth=float(source.get("curve_depth", 0.06)),
+                    curved_edges=[int(value) for value in source.get("curved_edges", [])],
+                ),
             }
         else:
             if bubble_box_local is not None:
@@ -1799,7 +1754,7 @@ def compute_bubble_layout(
     text_left, text_top, text_right, text_bottom = text_bbox
     text_width = text_right - text_left
     text_height = text_bottom - text_top
-    if bubble_type == "shout" and safe_padding is None:
+    if bubble_type == "shout_polygon" and safe_padding is None:
         safe_padding = {
             "left": 0.20,
             "right": 0.20,
@@ -1867,7 +1822,7 @@ def compute_bubble_layout(
         "padding_bottom": padding_bottom,
         "outline_width": outline_width,
     }
-    if bubble_type == "shout":
+    if bubble_type == "shout_polygon":
         source = dict(bubble_params or {})
         curved_edges = [int(value) for value in source.get("curved_edges", [])]
         curve_depth = float(source.get("curve_depth", 0.06))
@@ -1946,7 +1901,7 @@ def compute_bubble_layout(
         )
         if shape_layout is not None:
             layout["shape_layout"] = shape_layout
-    elif bubble_type and bubble_type.startswith("shout_rect"):
+    elif bubble_type == "shout" or (bubble_type and bubble_type.startswith("shout_rect")):
         variant = _shout_rect_variant_spec(bubble_type)
         frame_pad_left = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))
         frame_pad_right = int(round(float(font_size) * float(variant["frame_pad_x_ratio"])))

@@ -11,15 +11,45 @@
         "bottom": 1.2
       }
     },
-    "square": {
-      "kind": "procedural",
-      "generator": "ellipse_panel"
-    },
     "narration": {
       "kind": "procedural",
       "generator": "rect_panel"
     },
     "shout": {
+      "kind": "procedural",
+      "stroke_width": 2.3,
+      "generator": "pointed_rect_kink_panel",
+      "safe_padding": {
+        "left": 0.4,
+        "right": 0.4,
+        "top": 0.4,
+        "bottom": 0.4
+      },
+      "params": {
+        "view_box": [0, 0, 360, 440],
+        "inset_left": 62,
+        "inset_right": 48,
+        "inset_top": 76,
+        "inset_bottom": 84,
+        "top_depth": 10,
+        "bottom_depth": 9,
+        "left_depth": 20,
+        "right_depth": 16,
+        "pull": 0.58,
+        "bow": 24,
+        "shoulder": 0.18,
+        "side_bow": 18,
+        "side_shoulder": 0.34,
+        "midpoint_count_min": 1,
+        "midpoint_count_max": 2,
+        "midpoint_tangent_jitter": 18,
+        "midpoint_depth_jitter": 10,
+        "bottom_midpoint_vertex_bias": 0.5,
+        "corner_tangent_jitter": 8,
+        "corner_inward_jitter": 6
+      }
+    },
+    "shout_polygon": {
       "kind": "procedural",
       "stroke_width": 2.5,
       "generator": "polygon_shout_panel",
@@ -118,40 +148,6 @@
         "corner_inward_jitter": 6
       }
     },
-    "shout_rect_pointed_kink": {
-      "kind": "procedural",
-      "stroke_width": 2.3,
-      "generator": "pointed_rect_kink_panel",
-      "safe_padding": {
-        "left": 0.4,
-        "right": 0.4,
-        "top": 0.4,
-        "bottom": 0.4
-      },
-      "params": {
-        "view_box": [0, 0, 360, 440],
-        "inset_left": 62,
-        "inset_right": 48,
-        "inset_top": 76,
-        "inset_bottom": 84,
-        "top_depth": 10,
-        "bottom_depth": 9,
-        "left_depth": 20,
-        "right_depth": 16,
-        "pull": 0.58,
-        "bow": 24,
-        "shoulder": 0.18,
-        "side_bow": 18,
-        "side_shoulder": 0.34,
-        "midpoint_count_min": 1,
-        "midpoint_count_max": 2,
-        "midpoint_tangent_jitter": 18,
-        "midpoint_depth_jitter": 10,
-        "bottom_midpoint_vertex_bias": 0.5,
-        "corner_tangent_jitter": 8,
-        "corner_inward_jitter": 6
-      }
-    },
     "wavy": {
       "kind": "procedural",
       "stroke_width": 2.0,
@@ -188,25 +184,6 @@
         "phase": 0.4,
         "asymmetry": 0.15,
         "radial_blend": 0.0
-      }
-    },
-    "wavy_polygon": {
-      "kind": "procedural",
-      "stroke_width": 2.0,
-      "generator": "polygon_wavy_panel",
-      "params": {
-        "view_box": [50, 50, 420, 660],
-        "points": [
-          [268.0, 186.0],
-          [360.0, 288.0],
-          [352.0, 502.0],
-          [256.0, 586.0],
-          [174.0, 512.0],
-          [166.0, 276.0]
-        ],
-        "round_ratio": 0.1407,
-        "edge_bulge": [3.694, 3.411, 3.438, 3.459, 3.325, 2.637],
-        "tension": 0.72
       }
     }
   }

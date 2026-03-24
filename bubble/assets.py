@@ -320,12 +320,11 @@ def resolve_bubble_renderable_asset(
                 assert entry.generator is not None
                 params = copy.deepcopy(entry.params or {})
                 if variant_seed is not None and normalized_type in {
+                    "shout",
                     "wavy",
                     "wavy_fine",
-                    "wavy_polygon",
                     "shout_rect_pointed",
                     "shout_rect_pointed_drop",
-                    "shout_rect_pointed_kink",
                 }:
                     params["seed"] = int(variant_seed)
                 return ResolvedBubbleAsset(
