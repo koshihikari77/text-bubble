@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>text-bubble editor</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --border: #d7d8dc;
+        --panel: #f6f7f9;
+        --ink: #1d1f24;
+        --muted: #626873;
+        --accent: #0f766e;
+        --danger: #b91c1c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: #ffffff;
+      }
+      button, select, textarea, input { font: inherit; }
+      button {
+        border: 1px solid var(--border);
+        background: #ffffff;
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 240px minmax(420px, 1fr) 320px;
+        height: 100vh;
+        min-width: 960px;
+      }
+      .sidebar, .inspector {
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        overflow: auto;
+        padding: 12px;
+      }
+      .inspector { border-right: 0; border-left: 1px solid var(--border); }
+      .main { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
+      .toolbar {
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        padding: 8px 12px;
+        align-items: center;
+      }
+      .canvas-wrap { overflow: auto; background: #e9ebef; padding: 16px; }
+      .stage-shell { width: max-content; background: #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
+      .statusbar { border-top: 1px solid var(--border); padding: 6px 12px; color: var(--muted); font-size: 12px; min-height: 24px; }
+      h1, h2 { font-size: 14px; margin: 0 0 8px; }
+      .case-list, .bubble-list { display: grid; gap: 4px; }
+      .case-button, .bubble-button { text-align: left; width: 100%; padding: 6px 8px; }
+      .case-button.active, .bubble-button.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+      .field { display: grid; gap: 4px; margin-bottom: 12px; }
+      .field label { font-size: 12px; color: var(--muted); }
+      .field select, .field textarea, .field input {
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #ffffff;
+      }
+      .field textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 110px; resize: vertical; }
+      .error { color: var(--danger); font-size: 12px; }
+      .muted { color: var(--muted); font-size: 12px; }
+      .save-indicator { font-size: 12px; color: var(--muted); }
+      .save-indicator.dirty { color: var(--accent); }
+      .save-indicator.error { color: var(--danger); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-type="module">
+      const { useCallback, useEffect, useMemo, useRef, useState } = React;
+
+      const SAVE_DEBOUNCE_MS = 350;
+
+      async function apiGet(path) {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
+      async function apiPut(path, body) {
+        const res = await fetch(path, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
+
+      async function fetchSprite(caseId, bubbleId) {
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bubbles/${encodeURIComponent(bubbleId)}/sprite`);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        const headers = res.headers;
+        const blob = await res.blob();
+        return {
+          url: URL.createObjectURL(blob),
+          width: Number(headers.get("X-Sprite-Width") || 0),
+          height: Number(headers.get("X-Sprite-Height") || 0),
+          anchorOffsetX: Number(headers.get("X-Sprite-Anchor-X") || 0),
+          anchorOffsetY: Number(headers.get("X-Sprite-Anchor-Y") || 0),
+          version: headers.get("X-Sprite-Version") || "",
+        };
+      }
+
+      function clamp01(value) { return Math.max(0, Math.min(1, value)); }
+
+      function useDebouncedCallback(fn, delay) {
+        const ref = useRef(fn);
+        const timer = useRef(null);
+        useEffect(() => { ref.current = fn; }, [fn]);
+        return useCallback((...args) => {
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => ref.current(...args), delay);
+        }, [delay]);
+      }
+
+      function CaseList({ cases, selected, onSelect }) {
+        return (
+          <div className="case-list">
+            {cases.map((c) => (
+              <button
+                key={c.case_id}
+                className={"case-button" + (c.case_id === selected ? " active" : "")}
+                onClick={() => onSelect(c.case_id)}
+              >
+                <div>{c.case_id}</div>
+                <div className="muted">{c.status}</div>
+              </button>
+            ))}
+          </div>
+        );
+      }
+
+      function BubbleList({ bubbles, selected, onSelect }) {
+        return (
+          <div className="bubble-list" style={{ marginTop: 12 }}>
+            <h2>Bubbles</h2>
+            {bubbles.map((b) => (
+              <button
+                key={b.bubble_id}
+                className={"bubble-button" + (b.bubble_id === selected ? " active" : "")}
+                onClick={() => onSelect(b.bubble_id)}
+              >
+                <div>{b.bubble_id}</div>
+                <div className="muted">{b.bubble_type}</div>
+              </button>
+            ))}
+          </div>
+        );
+      }
+
+      function Inspector({ bubble, bubbleTypes, onChange, columnsError }) {
+        if (!bubble) {
+          return <div className="muted">バブルを選択してください。</div>;
+        }
+        const columnsText = (bubble.columns || []).join("\n");
+        return (
+          <div>
+            <h2>{bubble.bubble_id}</h2>
+            <div className="field">
+              <label>本文 (text)</label>
+              <textarea value={bubble.text} readOnly />
+              <span className="muted">v1 では本文編集は未対応。</span>
+            </div>
+            <div className="field">
+              <label>bubble_type</label>
+              <select
+                value={bubble.bubble_type}
+                onChange={(event) => onChange({ ...bubble, bubble_type: event.target.value, manual: { ...bubble.manual, bubble_type: true } })}
+              >
+                {bubbleTypes.map((t) => (<option key={t} value={t}>{t}</option>))}
+              </select>
+            </div>
+            <div className="field">
+              <label>columns (1 行 = 1 列)</label>
+              <textarea
+                value={columnsText}
+                onChange={(event) => {
+                  const lines = event.target.value.split("\n");
+                  onChange({ ...bubble, columns: lines, manual: { ...bubble.manual, columns: true } });
+                }}
+              />
+              {columnsError ? <span className="error">{columnsError}</span> : <span className="muted">結合した結果が text と一致する必要があります。</span>}
+            </div>
+            <div className="field">
+              <label>placement</label>
+              <div className="muted">
+                anchor_x = {bubble.placement.anchor_x.toFixed(3)}, anchor_y = {bubble.placement.anchor_y.toFixed(3)}
+              </div>
+              <div className="muted">manual: {Object.entries(bubble.manual || {}).filter(([, v]) => v).map(([k]) => k).join(", ") || "(なし)"}</div>
+            </div>
+          </div>
+        );
+      }
+
+      function App() {
+        const [cases, setCases] = useState([]);
+        const [bubbleTypes, setBubbleTypes] = useState([]);
+        const [selectedCaseId, setSelectedCaseId] = useState(null);
+        const [document, setDocument] = useState(null);
+        const [imageInfo, setImageInfo] = useState(null);
+        const [sprites, setSprites] = useState({});
+        const [selectedBubbleId, setSelectedBubbleId] = useState(null);
+        const [saveStatus, setSaveStatus] = useState("idle");
+        const [saveError, setSaveError] = useState("");
+        const [columnsError, setColumnsError] = useState("");
+
+        const stageRef = useRef(null);
+        const layersRef = useRef({ stage: null, image: null, bubbles: null });
+        const bubbleNodesRef = useRef({});
+        const imageObjectRef = useRef(null);
+
+        useEffect(() => {
+          apiGet("/api/project").then((project) => {
+            setCases(project.cases || []);
+            if (!selectedCaseId && project.cases && project.cases.length) {
+              setSelectedCaseId(project.cases[0].case_id);
+            }
+          }).catch((err) => setSaveError(String(err)));
+          apiGet("/api/bubble-types").then((res) => setBubbleTypes(res.types || []));
+        }, []);
+
+        useEffect(() => {
+          if (!selectedCaseId) return;
+          setSprites({});
+          setSelectedBubbleId(null);
+          setImageInfo(null);
+          setDocument(null);
+          apiGet(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`).then(setDocument).catch((err) => setSaveError(String(err)));
+          apiGet(`/api/cases/${encodeURIComponent(selectedCaseId)}/image-info`).then(setImageInfo).catch((err) => setSaveError(String(err)));
+        }, [selectedCaseId]);
+
+        useEffect(() => {
+          if (!document || !selectedCaseId) return;
+          let cancelled = false;
+          (async () => {
+            const updates = {};
+            for (const bubble of document.bubbles) {
+              try {
+                const sprite = await fetchSprite(selectedCaseId, bubble.bubble_id);
+                if (cancelled) {
+                  URL.revokeObjectURL(sprite.url);
+                  return;
+                }
+                updates[bubble.bubble_id] = sprite;
+              } catch (err) {
+                console.warn("sprite fetch failed", bubble.bubble_id, err);
+              }
+            }
+            if (!cancelled) setSprites((prev) => ({ ...prev, ...updates }));
+          })();
+          return () => { cancelled = true; };
+        }, [document?.bubbles?.map((b) => b.bubble_id).join(","), selectedCaseId]);
+
+        useEffect(() => {
+          if (!stageRef.current || !imageInfo) return;
+          const stage = new Konva.Stage({
+            container: stageRef.current,
+            width: imageInfo.width,
+            height: imageInfo.height,
+          });
+          const imageLayer = new Konva.Layer();
+          const bubbleLayer = new Konva.Layer();
+          stage.add(imageLayer);
+          stage.add(bubbleLayer);
+          layersRef.current = { stage, image: imageLayer, bubbles: bubbleLayer };
+
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => {
+            const node = new Konva.Image({ image: img, width: imageInfo.width, height: imageInfo.height });
+            imageLayer.add(node);
+            imageLayer.draw();
+            imageObjectRef.current = img;
+          };
+          img.src = `/api/cases/${encodeURIComponent(selectedCaseId)}/image`;
+
+          stage.on("click tap", (event) => {
+            if (event.target === stage) setSelectedBubbleId(null);
+          });
+
+          return () => {
+            stage.destroy();
+            layersRef.current = { stage: null, image: null, bubbles: null };
+            bubbleNodesRef.current = {};
+            if (imageObjectRef.current) imageObjectRef.current = null;
+          };
+        }, [selectedCaseId, imageInfo?.width, imageInfo?.height]);
+
+        useEffect(() => {
+          const layer = layersRef.current.bubbles;
+          if (!layer || !imageInfo || !document) return;
+          const nodes = bubbleNodesRef.current;
+          const seen = new Set();
+          for (const bubble of document.bubbles) {
+            seen.add(bubble.bubble_id);
+            const sprite = sprites[bubble.bubble_id];
+            if (!sprite) continue;
+            const anchorPxX = bubble.placement.anchor_x * imageInfo.width;
+            const anchorPxY = bubble.placement.anchor_y * imageInfo.height;
+            const left = anchorPxX - sprite.anchorOffsetX;
+            const top = anchorPxY - sprite.anchorOffsetY;
+            let node = nodes[bubble.bubble_id];
+            const isSelected = bubble.bubble_id === selectedBubbleId;
+            const imageEl = new Image();
+            imageEl.src = sprite.url;
+            if (!node) {
+              node = new Konva.Image({ image: imageEl, x: left, y: top, width: sprite.width, height: sprite.height, draggable: true });
+              node.on("mousedown touchstart", () => setSelectedBubbleId(bubble.bubble_id));
+              node.on("dragmove", () => {
+                const stroke = isSelected ? 2 : 0;
+                node.strokeWidth(stroke);
+                layer.batchDraw();
+              });
+              node.on("dragend", () => {
+                const newAnchorX = clamp01((node.x() + sprite.anchorOffsetX) / imageInfo.width);
+                const newAnchorY = clamp01((node.y() + sprite.anchorOffsetY) / imageInfo.height);
+                setDocument((prev) => {
+                  if (!prev) return prev;
+                  const bubbles = prev.bubbles.map((b) =>
+                    b.bubble_id === bubble.bubble_id
+                      ? { ...b, placement: { anchor_x: newAnchorX, anchor_y: newAnchorY }, manual: { ...b.manual, placement: true } }
+                      : b
+                  );
+                  const next = { ...prev, bubbles };
+                  setSaveStatus("dirty");
+                  debouncedPersist(next);
+                  return next;
+                });
+              });
+              node.stroke("#0f766e");
+              node.strokeWidth(0);
+              layer.add(node);
+              nodes[bubble.bubble_id] = node;
+            }
+            imageEl.onload = () => {
+              node.image(imageEl);
+              node.width(sprite.width);
+              node.height(sprite.height);
+              layer.batchDraw();
+            };
+            node.x(left);
+            node.y(top);
+            node.strokeWidth(isSelected ? 2 : 0);
+            node.moveToTop();
+          }
+          for (const bubbleId of Object.keys(nodes)) {
+            if (!seen.has(bubbleId)) {
+              nodes[bubbleId].destroy();
+              delete nodes[bubbleId];
+            }
+          }
+          layer.batchDraw();
+        }, [document, sprites, selectedBubbleId, imageInfo?.width, imageInfo?.height]);
+
+        const persist = useCallback(async (next) => {
+          try {
+            setSaveStatus("saving");
+            const saved = await apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next);
+            setDocument(saved);
+            setSaveStatus("saved");
+            setSaveError("");
+          } catch (err) {
+            setSaveStatus("error");
+            setSaveError(String(err));
+          }
+        }, [selectedCaseId]);
+        const debouncedPersist = useDebouncedCallback(persist, SAVE_DEBOUNCE_MS);
+
+        const updateBubble = useCallback((nextBubble) => {
+          setDocument((prev) => {
+            if (!prev) return prev;
+            const joined = (nextBubble.columns || []).join("");
+            if (joined !== nextBubble.text) {
+              setColumnsError("columns を結合した結果が text と一致しません");
+              return { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
+            }
+            setColumnsError("");
+            const next = { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
+            setSaveStatus("dirty");
+            debouncedPersist(next);
+            return next;
+          });
+          if ((nextBubble.columns || []).join("") === nextBubble.text) {
+            fetchSprite(selectedCaseId, nextBubble.bubble_id).then((sprite) => {
+              setSprites((prev) => {
+                const previous = prev[nextBubble.bubble_id];
+                if (previous && previous.url) URL.revokeObjectURL(previous.url);
+                return { ...prev, [nextBubble.bubble_id]: sprite };
+              });
+            }).catch((err) => console.warn("sprite reload failed", err));
+          }
+        }, [debouncedPersist, selectedCaseId]);
+
+        const selectedBubble = useMemo(() => {
+          if (!document || !selectedBubbleId) return null;
+          return document.bubbles.find((b) => b.bubble_id === selectedBubbleId) || null;
+        }, [document, selectedBubbleId]);
+
+        const statusLabel = saveStatus === "saving" ? "保存中..." : saveStatus === "saved" ? "保存しました" : saveStatus === "dirty" ? "未保存の変更" : saveStatus === "error" ? `保存失敗: ${saveError}` : "";
+
+        return (
+          <div className="app">
+            <aside className="sidebar">
+              <h1>Cases</h1>
+              <CaseList cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} />
+              {document ? <BubbleList bubbles={document.bubbles} selected={selectedBubbleId} onSelect={setSelectedBubbleId} /> : null}
+            </aside>
+            <main className="main">
+              <div className="toolbar">
+                <strong>{selectedCaseId || "—"}</strong>
+                <span className={"save-indicator " + (saveStatus === "dirty" ? "dirty" : saveStatus === "error" ? "error" : "")}>{statusLabel}</span>
+              </div>
+              <div className="canvas-wrap">
+                <div className="stage-shell" ref={stageRef} />
+              </div>
+              <div className="statusbar">
+                {imageInfo ? `${imageInfo.width} x ${imageInfo.height}` : ""}
+              </div>
+            </main>
+            <aside className="inspector">
+              <h1>Inspector</h1>
+              <Inspector bubble={selectedBubble} bubbleTypes={bubbleTypes} onChange={updateBubble} columnsError={columnsError} />
+            </aside>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(window.document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
