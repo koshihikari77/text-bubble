@@ -392,6 +392,20 @@ def add_workspace_case(
     return document
 
 
+def find_workspaces(scan_dir: Path) -> list[Path]:
+    """Return subdirectories of `scan_dir` that look like text-bubble workspaces."""
+
+    if not scan_dir.exists() or not scan_dir.is_dir():
+        return []
+    candidates: list[Path] = []
+    for entry in sorted(scan_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        if (entry / "reflow.json").is_file() and (entry / "scene.json").is_file():
+            candidates.append(entry)
+    return candidates
+
+
 def generated_dir_for_case(project_dir: Path, case_id: str) -> Path:
     return project_dir / "cases" / case_id / "generated"
 

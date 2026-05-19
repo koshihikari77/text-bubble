@@ -11,6 +11,7 @@ from PIL import Image
 from bubble.editor_models import (
     add_workspace_case,
     document_to_stage_files,
+    find_workspaces,
     render_case_document,
     validate_document,
 )
@@ -173,6 +174,23 @@ class EditorModelTests(unittest.TestCase):
             _, scene_plans = load_scene_plan_json(project / "cases" / "case1" / "generated" / "scene.json")
             self.assertEqual(scene_plans[0].anchor_x, 0.8)
             render_scene_bundle.assert_called_once()
+
+
+    def test_find_workspaces_returns_only_directories_with_reflow_and_scene(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            image_path = root / "image.png"
+            Image.new("RGB", (20, 20), "white").save(image_path)
+            valid = root / "valid"
+            _write_workspace(valid, image_path)
+            (root / "loose-file.txt").write_text("noise", encoding="utf-8")
+            partial = root / "missing-scene"
+            partial.mkdir()
+            (partial / "reflow.json").write_text("{}", encoding="utf-8")
+
+            found = find_workspaces(root)
+
+            self.assertEqual(found, [valid])
 
 
 if __name__ == "__main__":

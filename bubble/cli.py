@@ -1060,18 +1060,45 @@ def editor_import_workspace(
 @editor_app.command("import-workspaces")
 def editor_import_workspaces(
     project: Path = typer.Option(Path("out/editor_project"), "--project", help="Editor project directory."),
-    workspaces: list[Path] = typer.Argument(..., help="Existing text-bubble workspace directories."),
+    workspaces: list[Path] = typer.Argument(None, help="Existing text-bubble workspace directories."),
+    scan_dir: Path | None = typer.Option(
+        None,
+        "--scan-dir",
+        help="Scan the given directory for workspace subdirectories (containing reflow.json and scene.json) and import them all.",
+    ),
 ) -> None:
-    try:
-        from bubble.editor_models import add_workspace_case
+    from bubble.editor_models import add_workspace_case, find_workspaces
 
-        for workspace in workspaces:
-            case_id = workspace.name
+    targets: list[Path] = list(workspaces or [])
+    if scan_dir is not None:
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            typer.echo(f"--scan-dir directory not found: {scan_dir}", err=True)
+            raise typer.Exit(code=1)
+        targets.extend(find_workspaces(scan_dir))
+    if not targets:
+        typer.echo("no workspaces specified (pass paths and/or --scan-dir)", err=True)
+        raise typer.Exit(code=1)
+
+    seen_paths: set[Path] = set()
+    imported = 0
+    failed = 0
+    for workspace in targets:
+        resolved = workspace.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        case_id = workspace.name
+        try:
             document = add_workspace_case(project_dir=project, case_id=case_id, workspace=workspace)
-            typer.echo(f"editor document saved: {project / 'cases' / document['case_id'] / 'document.json'}")
-    except Exception as exc:  # noqa: BLE001
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1) from exc
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            typer.echo(f"skipped {workspace}: {exc}", err=True)
+            continue
+        imported += 1
+        typer.echo(f"editor document saved: {project / 'cases' / document['case_id'] / 'document.json'}")
+    typer.echo(f"imported {imported} workspace(s), {failed} failed")
+    if imported == 0:
+        raise typer.Exit(code=1)
 
 
 @editor_app.command("serve")
