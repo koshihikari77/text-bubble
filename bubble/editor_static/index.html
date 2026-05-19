@@ -315,19 +315,14 @@
             const top = anchorPxY - sprite.anchorOffsetY;
             let node = nodes[bubble.bubble_id];
             const isSelected = bubble.bubble_id === selectedBubbleId;
-            const imageEl = new Image();
-            imageEl.src = sprite.url;
             if (!node) {
-              node = new Konva.Image({ image: imageEl, x: left, y: top, width: sprite.width, height: sprite.height, draggable: true });
+              node = new Konva.Image({ x: left, y: top, width: sprite.width, height: sprite.height, draggable: true });
               node.on("mousedown touchstart", () => setSelectedBubbleId(bubble.bubble_id));
-              node.on("dragmove", () => {
-                const stroke = isSelected ? 2 : 0;
-                node.strokeWidth(stroke);
-                layer.batchDraw();
-              });
               node.on("dragend", () => {
-                const newAnchorX = clamp01((node.x() + sprite.anchorOffsetX) / imageInfo.width);
-                const newAnchorY = clamp01((node.y() + sprite.anchorOffsetY) / imageInfo.height);
+                const offsetX = Number(node.getAttr("spriteAnchorX") || 0);
+                const offsetY = Number(node.getAttr("spriteAnchorY") || 0);
+                const newAnchorX = clamp01((node.x() + offsetX) / imageInfo.width);
+                const newAnchorY = clamp01((node.y() + offsetY) / imageInfo.height);
                 setDocument((prev) => {
                   if (!prev) return prev;
                   const bubbles = prev.bubbles.map((b) =>
@@ -346,12 +341,23 @@
               layer.add(node);
               nodes[bubble.bubble_id] = node;
             }
-            imageEl.onload = () => {
-              node.image(imageEl);
-              node.width(sprite.width);
-              node.height(sprite.height);
-              layer.batchDraw();
-            };
+            node.setAttr("spriteAnchorX", sprite.anchorOffsetX);
+            node.setAttr("spriteAnchorY", sprite.anchorOffsetY);
+            const previousVersion = node.getAttr("spriteVersion");
+            if (previousVersion !== sprite.version) {
+              const imageEl = new Image();
+              imageEl.onload = () => {
+                node.image(imageEl);
+                node.width(sprite.width);
+                node.height(sprite.height);
+                node.setAttr("spriteVersion", sprite.version);
+                layer.batchDraw();
+              };
+              imageEl.src = sprite.url;
+              if (imageEl.complete && imageEl.naturalWidth > 0) {
+                imageEl.onload();
+              }
+            }
             node.x(left);
             node.y(top);
             node.strokeWidth(isSelected ? 2 : 0);
