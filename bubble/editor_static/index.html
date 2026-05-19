@@ -381,29 +381,43 @@
         const debouncedPersist = useDebouncedCallback(persist, SAVE_DEBOUNCE_MS);
 
         const updateBubble = useCallback((nextBubble) => {
+          const joined = (nextBubble.columns || []).join("");
+          const columnsValid = joined === nextBubble.text;
           setDocument((prev) => {
             if (!prev) return prev;
-            const joined = (nextBubble.columns || []).join("");
-            if (joined !== nextBubble.text) {
-              setColumnsError("columns を結合した結果が text と一致しません");
-              return { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
-            }
-            setColumnsError("");
+            return { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
+          });
+          if (!columnsValid) {
+            setColumnsError("columns を結合した結果が text と一致しません");
+            return;
+          }
+          setColumnsError("");
+          setSaveStatus("saving");
+          setDocument((prev) => {
+            if (!prev) return prev;
             const next = { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
-            setSaveStatus("dirty");
-            debouncedPersist(next);
+            apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next)
+              .then((saved) => {
+                setDocument(saved);
+                setSaveStatus("saved");
+                setSaveError("");
+                return fetchSprite(selectedCaseId, nextBubble.bubble_id);
+              })
+              .then((sprite) => {
+                if (!sprite) return;
+                setSprites((prev2) => {
+                  const previous = prev2[nextBubble.bubble_id];
+                  if (previous && previous.url) URL.revokeObjectURL(previous.url);
+                  return { ...prev2, [nextBubble.bubble_id]: sprite };
+                });
+              })
+              .catch((err) => {
+                setSaveStatus("error");
+                setSaveError(String(err));
+              });
             return next;
           });
-          if ((nextBubble.columns || []).join("") === nextBubble.text) {
-            fetchSprite(selectedCaseId, nextBubble.bubble_id).then((sprite) => {
-              setSprites((prev) => {
-                const previous = prev[nextBubble.bubble_id];
-                if (previous && previous.url) URL.revokeObjectURL(previous.url);
-                return { ...prev, [nextBubble.bubble_id]: sprite };
-              });
-            }).catch((err) => console.warn("sprite reload failed", err));
-          }
-        }, [debouncedPersist, selectedCaseId]);
+        }, [selectedCaseId]);
 
         const selectedBubble = useMemo(() => {
           if (!document || !selectedBubbleId) return null;
