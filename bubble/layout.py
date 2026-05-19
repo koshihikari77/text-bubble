@@ -1853,10 +1853,10 @@ def compute_bubble_layout(
             }
         )
     elif bubble_type in {"wavy", "wavy_fine"}:
-        frame_pad_left = int(round(float(font_size) * 0.72))
-        frame_pad_right = int(round(float(font_size) * 0.72))
-        frame_pad_top = int(round(float(font_size) * 0.98))
-        frame_pad_bottom = int(round(float(font_size) * 0.98))
+        frame_pad_left = int(round(float(font_size) * 0.44))
+        frame_pad_right = int(round(float(font_size) * 0.44))
+        frame_pad_top = int(round(float(font_size) * 0.66))
+        frame_pad_bottom = int(round(float(font_size) * 0.66))
         bubble_left = inner_bubble_left - frame_pad_left
         bubble_top = inner_bubble_top - frame_pad_top
         bubble_right = inner_bubble_right + frame_pad_right

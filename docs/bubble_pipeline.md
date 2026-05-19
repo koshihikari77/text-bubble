@@ -90,11 +90,16 @@
     {
       "bubble_id": "b1",
       "sentence_ids": [1],
-      "columns": ["今日はもう", "帰ろうかな..."]
+      "columns": ["今日はもう", "帰ろうかな..."],
+      "bubble_type": "ellipse"
     }
   ]
 }
 ```
+
+- `bubble_type` は任意
+- 省略時は `ellipse`
+- `scene.json` にも `bubble_type` がある場合、最終 render では `reflow.json` を優先する
 
 ## モデルにやらせること
 

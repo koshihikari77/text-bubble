@@ -76,6 +76,34 @@ class SceneRuntimeTests(unittest.TestCase):
         self.assertEqual(bundle.composed_plans[0].columns, ["こんにちは"])
         self.assertEqual(bundle.composed_plans[0].sentence_ids, [1])
 
+    def test_compose_scene_bundle_prefers_reflow_bubble_type(self) -> None:
+        reflow_plans = [
+            ReflowBubblePlan(
+                bubble_id="b1",
+                sentence_ids=[1],
+                columns=["こんにちは"],
+                bubble_type="wavy",
+            ),
+        ]
+        scene_plans = [
+            SceneBubblePlan(
+                bubble_id="b1",
+                anchor_x=0.84,
+                anchor_y=0.18,
+                sentence_ids=[1],
+                bubble_type="ellipse",
+            ),
+        ]
+
+        bundle = compose_scene_bundle(
+            dialogue_lines=["こんにちは"],
+            reflow_plans=reflow_plans,
+            scene_plans=scene_plans,
+            source="scene-json",
+        )
+
+        self.assertEqual(bundle.composed_plans[0].bubble_type, "wavy")
+
     def test_evaluated_solution_round_trip_and_bundle_reuse(self) -> None:
         from bubble.scene_runtime import _import_cp_sat_scene_solver
 

@@ -52,6 +52,7 @@ class ReflowBubblePlan:
     bubble_id: str
     sentence_ids: list[int]
     columns: list[str]
+    bubble_type: str | None = None
 
 
 @dataclass
@@ -105,11 +106,14 @@ def assignment_plans_payload(dialogue_lines: list[str], plans: list[AssignmentBu
 
 
 def reflow_bubble_plan_to_dict(plan: ReflowBubblePlan) -> dict[str, Any]:
-    return {
+    payload = {
         "bubble_id": plan.bubble_id,
         "sentence_ids": plan.sentence_ids,
         "columns": plan.columns,
     }
+    if plan.bubble_type:
+        payload["bubble_type"] = plan.bubble_type
+    return payload
 
 
 def reflow_plans_payload(dialogue_lines: list[str], plans: list[ReflowBubblePlan]) -> dict[str, Any]:

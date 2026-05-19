@@ -44,7 +44,6 @@ BUBBLE_TEXT_ALPHA_THRESHOLD = 96
 BUBBLE_TEXT_SAFE_MARGIN_PX = 4
 SAFE_INSET_GROWTH_FACTORS = (1.0, 1.05, 1.12, 1.22, 1.34, 1.48, 1.64)
 
-
 def _parse_letter_spacing_px(value: str | None, default: float = -1.0) -> float:
     raw = (value or "").strip()
     if not raw:
@@ -646,11 +645,13 @@ def _has_explicit_speaker_id(value: str) -> bool:
 
 
 def _should_merge_bubbles(left: RenderedBubble, right: RenderedBubble) -> bool:
-    if left.plan.bubble_type != right.plan.bubble_type:
+    if left.bubble_asset.source_kind != right.bubble_asset.source_kind:
         return False
-    if not _has_explicit_speaker_id(left.plan.speaker_id) or not _has_explicit_speaker_id(right.plan.speaker_id):
+    if left.bubble_asset.source_kind != "procedural" and left.plan.bubble_type != right.plan.bubble_type:
         return False
-    if left.plan.speaker_id != right.plan.speaker_id:
+    left_has_speaker = _has_explicit_speaker_id(left.plan.speaker_id)
+    right_has_speaker = _has_explicit_speaker_id(right.plan.speaker_id)
+    if left_has_speaker and right_has_speaker and left.plan.speaker_id != right.plan.speaker_id:
         return False
     left_ids = left.plan.sentence_ids
     right_ids = right.plan.sentence_ids
@@ -705,7 +706,8 @@ def _render_merged_group_image(
     resvg_executable: str | None,
 ) -> tuple[Image.Image, int, int]:
     bubble_asset = group[0].bubble_asset
-    if bubble_asset.source_kind == "procedural":
+    all_procedural = all(item.bubble_asset.source_kind == "procedural" for item in group)
+    if all_procedural:
         placements = []
         for item in group:
             placements.append(
@@ -725,7 +727,7 @@ def _render_merged_group_image(
             )
         merged_svg, left, top, width, height = build_merged_svg_source_from_svg_sources(
             placements=placements,
-            stroke_width=bubble_asset.stroke_width,
+            stroke_width=max(item.bubble_asset.stroke_width for item in group),
         )
     else:
         placements = [

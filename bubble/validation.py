@@ -55,6 +55,14 @@ def _normalize_bubble_type(value: Any, *, index: int, context: str) -> str:
     raise RuntimeError(f"{context} {index} must include a non-empty bubble_type when provided")
 
 
+def _normalize_optional_bubble_type(value: Any, *, index: int, context: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise RuntimeError(f"{context} {index} must include a non-empty bubble_type when provided")
+
+
 def extract_plan(response: dict[str, Any], dialogue_lines: list[str]) -> list[BubblePlan]:
     message, raw_message = _message_to_text(response)
     try:
@@ -177,6 +185,7 @@ def extract_reflow_plan(
         bubble_id=bubble_id,
         sentence_ids=assignment_plan.sentence_ids,
         columns=columns,
+        bubble_type=_normalize_optional_bubble_type(data.get("bubble_type"), index=1, context="reflow bubble"),
     )
     return _validate_reflow_plans(dialogue_lines, [plan], require_full_coverage=False)[0]
 
@@ -314,6 +323,11 @@ def load_reflow_plan_json(plan_path: Path) -> tuple[list[str], list[ReflowBubble
                 bubble_id=bubble_id,
                 sentence_ids=[int(item) for item in sentence_ids],
                 columns=columns,
+                bubble_type=_normalize_optional_bubble_type(
+                    bubble.get("bubble_type"),
+                    index=index,
+                    context="bubble",
+                ),
             )
         )
     return dialogue_lines, validate_reflow_plans(dialogue_lines, plans)
@@ -359,7 +373,7 @@ def compose_bubble_plans(
                 sentence_ids=scene_plan.sentence_ids,
                 columns=reflow_plan.columns,
                 speaker_id=scene_plan.speaker_id,
-                bubble_type=scene_plan.bubble_type,
+                bubble_type=reflow_plan.bubble_type or scene_plan.bubble_type,
             )
         )
     return sorted(composed, key=lambda plan: plan.sentence_ids[0])

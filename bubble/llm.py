@@ -92,6 +92,11 @@ def build_reflow_schema() -> dict[str, Any]:
                 "maxItems": 12,
                 "items": {"type": "string", "minLength": 1, "maxLength": 32},
             },
+            "bubble_type": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+            },
         },
         "required": ["bubble_id", "columns"],
     }
