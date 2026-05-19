@@ -101,7 +101,8 @@
       }
 
       async function fetchSprite(caseId, bubbleId) {
-        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bubbles/${encodeURIComponent(bubbleId)}/sprite`);
+        const bust = Date.now();
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bubbles/${encodeURIComponent(bubbleId)}/sprite?ts=${bust}`);
         if (!res.ok) throw new Error(await res.text() || res.statusText);
         const headers = res.headers;
         const blob = await res.blob();

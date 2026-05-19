@@ -202,7 +202,7 @@ def create_editor_app(project_dir: Path) -> Any:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         headers = {
-            "Cache-Control": "public, max-age=31536000, immutable",
+            "Cache-Control": "no-cache, must-revalidate",
             "X-Sprite-Width": str(sprite.width_px),
             "X-Sprite-Height": str(sprite.height_px),
             "X-Sprite-Anchor-X": str(sprite.anchor_offset_x),
