@@ -36,9 +36,9 @@
       }
       .app {
         display: grid;
-        grid-template-columns: 240px minmax(420px, 1fr) 320px;
+        grid-template-columns: 320px minmax(420px, 1fr) 340px;
         height: 100vh;
-        min-width: 960px;
+        min-width: 1040px;
       }
       .sidebar, .inspector {
         background: var(--panel);
@@ -47,7 +47,7 @@
         padding: 12px;
       }
       .inspector { border-right: 0; border-left: 1px solid var(--border); }
-      .main { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
+      .main { display: grid; grid-template-rows: auto auto 1fr auto; min-width: 0; }
       .toolbar {
         border-bottom: 1px solid var(--border);
         display: flex;
@@ -55,13 +55,99 @@
         padding: 8px 12px;
         align-items: center;
       }
+      .overall-region {
+        border-bottom: 1px solid var(--border);
+        padding: 6px 12px;
+        background: #fbfbfc;
+      }
+      .overall-region > summary {
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--ink);
+        user-select: none;
+      }
+      .overall-region textarea {
+        width: 100%;
+        min-height: 60px;
+        margin-top: 6px;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #ffffff;
+        font: inherit;
+        resize: vertical;
+      }
       .canvas-wrap { overflow: auto; background: #e9ebef; padding: 16px; }
       .stage-shell { width: max-content; background: #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
       .statusbar { border-top: 1px solid var(--border); padding: 6px 12px; color: var(--muted); font-size: 12px; min-height: 24px; }
       h1, h2 { font-size: 14px; margin: 0 0 8px; }
-      .case-list, .bubble-list { display: grid; gap: 4px; }
-      .case-button, .bubble-button { text-align: left; width: 100%; padding: 6px 8px; }
-      .case-button.active, .bubble-button.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+      .case-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 8px;
+      }
+      .case-card {
+        position: relative;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+        text-align: left;
+        color: inherit;
+      }
+      .case-card .thumb {
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        background: #e9ebef;
+        display: block;
+      }
+      .case-card .thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .case-card .caption {
+        padding: 4px 6px;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+      .case-card .caption .case-id {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .case-card .caption .case-status { color: var(--muted); }
+      .case-card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+      .comment-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: rgba(15, 118, 110, 0.92);
+        color: #fff;
+        font-size: 11px;
+        line-height: 1;
+        padding: 3px 5px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+      .bubble-list { display: grid; gap: 4px; }
+      .bubble-button {
+        text-align: left;
+        width: 100%;
+        padding: 6px 8px;
+        position: relative;
+      }
+      .bubble-button.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+      .bubble-button .comment-badge {
+        top: 50%;
+        transform: translateY(-50%);
+      }
       .field { display: grid; gap: 4px; margin-bottom: 12px; }
       .field label { font-size: 12px; color: var(--muted); }
       .field select, .field textarea, .field input {
@@ -71,11 +157,15 @@
         background: #ffffff;
       }
       .field textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 110px; resize: vertical; }
+      .field textarea.comment { font-family: inherit; min-height: 70px; }
       .error { color: var(--danger); font-size: 12px; }
       .muted { color: var(--muted); font-size: 12px; }
       .save-indicator { font-size: 12px; color: var(--muted); }
       .save-indicator.dirty { color: var(--accent); }
       .save-indicator.error { color: var(--danger); }
+      .review-indicator { font-size: 11px; color: var(--muted); margin-left: 8px; }
+      .review-indicator.dirty { color: var(--accent); }
+      .review-indicator.error { color: var(--danger); }
     </style>
   </head>
   <body>
@@ -128,24 +218,35 @@
         }, [delay]);
       }
 
-      function CaseList({ cases, selected, onSelect }) {
+      function CaseGrid({ cases, selected, onSelect, hasCommentMap }) {
         return (
-          <div className="case-list">
-            {cases.map((c) => (
-              <button
-                key={c.case_id}
-                className={"case-button" + (c.case_id === selected ? " active" : "")}
-                onClick={() => onSelect(c.case_id)}
-              >
-                <div>{c.case_id}</div>
-                <div className="muted">{c.status}</div>
-              </button>
-            ))}
+          <div className="case-grid">
+            {cases.map((c) => {
+              const hasComment = !!hasCommentMap[c.case_id];
+              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${Date.now()}`;
+              return (
+                <button
+                  key={c.case_id}
+                  className={"case-card" + (c.case_id === selected ? " active" : "")}
+                  onClick={() => onSelect(c.case_id)}
+                  title={c.case_id}
+                >
+                  <span className="thumb">
+                    <img src={src} alt={c.case_id} loading="lazy" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
+                  </span>
+                  {hasComment ? <span className="comment-badge" title="コメントあり">★</span> : null}
+                  <span className="caption">
+                    <span className="case-id">{c.case_id}</span>
+                    {c.status ? <span className="case-status"> · {c.status}</span> : null}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         );
       }
 
-      function BubbleList({ bubbles, selected, onSelect }) {
+      function BubbleList({ bubbles, selected, onSelect, hasCommentMap }) {
         return (
           <div className="bubble-list" style={{ marginTop: 12 }}>
             <h2>Bubbles</h2>
@@ -157,54 +258,118 @@
               >
                 <div>{b.bubble_id}</div>
                 <div className="muted">{b.bubble_type}</div>
+                {hasCommentMap[b.bubble_id] ? <span className="comment-badge" title="コメントあり">★</span> : null}
               </button>
             ))}
           </div>
         );
       }
 
-      function Inspector({ bubble, bubbleTypes, onChange, columnsError }) {
-        if (!bubble) {
-          return <div className="muted">バブルを選択してください。</div>;
-        }
-        const columnsText = (bubble.columns || []).join("\n");
+      function Inspector({
+        bubble,
+        bubbleTypes,
+        onChange,
+        columnsError,
+        caseComment,
+        onChangeCaseComment,
+        bubbleComment,
+        onChangeBubbleComment,
+        selectedCaseId,
+      }) {
         return (
           <div>
-            <h2>{bubble.bubble_id}</h2>
-            <div className="field">
-              <label>本文 (text)</label>
-              <textarea value={bubble.text} readOnly />
-              <span className="muted">v1 では本文編集は未対応。</span>
-            </div>
-            <div className="field">
-              <label>bubble_type</label>
-              <select
-                value={bubble.bubble_type}
-                onChange={(event) => onChange({ ...bubble, bubble_type: event.target.value, manual: { ...bubble.manual, bubble_type: true } })}
-              >
-                {bubbleTypes.map((t) => (<option key={t} value={t}>{t}</option>))}
-              </select>
-            </div>
-            <div className="field">
-              <label>columns (1 行 = 1 列)</label>
-              <textarea
-                value={columnsText}
-                onChange={(event) => {
-                  const lines = event.target.value.split("\n");
-                  onChange({ ...bubble, columns: lines, manual: { ...bubble.manual, columns: true } });
-                }}
-              />
-              {columnsError ? <span className="error">{columnsError}</span> : <span className="muted">結合した結果が text と一致する必要があります。</span>}
-            </div>
-            <div className="field">
-              <label>placement</label>
-              <div className="muted">
-                anchor_x = {bubble.placement.anchor_x.toFixed(3)}, anchor_y = {bubble.placement.anchor_y.toFixed(3)}
+            {selectedCaseId ? (
+              <div className="field">
+                <label>case コメント</label>
+                <textarea
+                  className="comment"
+                  value={caseComment || ""}
+                  onChange={(event) => onChangeCaseComment(event.target.value)}
+                  placeholder={`${selectedCaseId} 全体への所感`}
+                />
               </div>
-              <div className="muted">manual: {Object.entries(bubble.manual || {}).filter(([, v]) => v).map(([k]) => k).join(", ") || "(なし)"}</div>
-            </div>
+            ) : null}
+            {!bubble ? (
+              <div className="muted">バブルを選択してください。</div>
+            ) : (
+              <div>
+                <h2>{bubble.bubble_id}</h2>
+                <div className="field">
+                  <label>本文 (text)</label>
+                  <textarea value={bubble.text} readOnly />
+                  <span className="muted">v1 では本文編集は未対応。</span>
+                </div>
+                <div className="field">
+                  <label>bubble_type</label>
+                  <select
+                    value={bubble.bubble_type}
+                    onChange={(event) => onChange({ ...bubble, bubble_type: event.target.value, manual: { ...bubble.manual, bubble_type: true } })}
+                  >
+                    {bubbleTypes.map((t) => (<option key={t} value={t}>{t}</option>))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>columns (1 行 = 1 列)</label>
+                  <textarea
+                    value={(bubble.columns || []).join("\n")}
+                    onChange={(event) => {
+                      const lines = event.target.value.split("\n");
+                      onChange({ ...bubble, columns: lines, manual: { ...bubble.manual, columns: true } });
+                    }}
+                  />
+                  {columnsError ? <span className="error">{columnsError}</span> : <span className="muted">結合した結果が text と一致する必要があります。</span>}
+                </div>
+                <div className="field">
+                  <label>bubble コメント</label>
+                  <textarea
+                    className="comment"
+                    value={bubbleComment || ""}
+                    onChange={(event) => onChangeBubbleComment(event.target.value)}
+                    placeholder="この吹き出しへの所感"
+                  />
+                </div>
+                <div className="field">
+                  <label>placement</label>
+                  <div className="muted">
+                    anchor_x = {bubble.placement.anchor_x.toFixed(3)}, anchor_y = {bubble.placement.anchor_y.toFixed(3)}
+                  </div>
+                  <div className="muted">manual: {Object.entries(bubble.manual || {}).filter(([, v]) => v).map(([k]) => k).join(", ") || "(なし)"}</div>
+                </div>
+              </div>
+            )}
           </div>
         );
+      }
+
+      function reviewFromServer(serverReview) {
+        const cases = {};
+        for (const c of (serverReview && serverReview.cases) || []) {
+          const bubbles = {};
+          for (const b of c.bubbles || []) bubbles[b.bubble_id] = b.comment || "";
+          cases[c.case_id] = { comment: c.comment || "", bubbles };
+        }
+        return { overall: (serverReview && serverReview.overall) || "", cases, orphans: (serverReview && serverReview.orphans) || [] };
+      }
+
+      function reviewToServer(local) {
+        const cases = [];
+        for (const [caseId, data] of Object.entries(local.cases || {})) {
+          const bubbles = [];
+          for (const [bubbleId, comment] of Object.entries(data.bubbles || {})) {
+            if (comment) bubbles.push({ bubble_id: bubbleId, comment });
+          }
+          if (data.comment || bubbles.length) cases.push({ case_id: caseId, comment: data.comment || "", bubbles });
+        }
+        return { overall: local.overall || "", cases, orphans: local.orphans || [] };
+      }
+
+      function caseHasAnyComment(reviewCase) {
+        if (!reviewCase) return false;
+        if (reviewCase.comment) return true;
+        for (const v of Object.values(reviewCase.bubbles || {})) {
+          if (v) return true;
+        }
+        return false;
       }
 
       function App() {
@@ -218,6 +383,9 @@
         const [saveStatus, setSaveStatus] = useState("idle");
         const [saveError, setSaveError] = useState("");
         const [columnsError, setColumnsError] = useState("");
+        const [review, setReview] = useState({ overall: "", cases: {}, orphans: [] });
+        const [reviewSaveStatus, setReviewSaveStatus] = useState("idle");
+        const [reviewSaveError, setReviewSaveError] = useState("");
 
         const stageRef = useRef(null);
         const layersRef = useRef({ stage: null, image: null, bubbles: null });
@@ -232,6 +400,7 @@
             }
           }).catch((err) => setSaveError(String(err)));
           apiGet("/api/bubble-types").then((res) => setBubbleTypes(res.types || []));
+          apiGet("/api/project/review").then((res) => setReview(reviewFromServer(res))).catch((err) => setReviewSaveError(String(err)));
         }, []);
 
         useEffect(() => {
@@ -432,19 +601,99 @@
         }, [document, selectedBubbleId]);
 
         const statusLabel = saveStatus === "saving" ? "保存中..." : saveStatus === "saved" ? "保存しました" : saveStatus === "dirty" ? "未保存の変更" : saveStatus === "error" ? `保存失敗: ${saveError}` : "";
+        const reviewStatusLabel = reviewSaveStatus === "saving" ? "review 保存中..." : reviewSaveStatus === "saved" ? "review 保存しました" : reviewSaveStatus === "dirty" ? "review 未保存" : reviewSaveStatus === "error" ? `review 保存失敗: ${reviewSaveError}` : "";
+
+        const persistReview = useCallback(async (nextReview) => {
+          try {
+            setReviewSaveStatus("saving");
+            const saved = await apiPut("/api/project/review", reviewToServer(nextReview));
+            setReview(reviewFromServer(saved));
+            setReviewSaveStatus("saved");
+            setReviewSaveError("");
+          } catch (err) {
+            setReviewSaveStatus("error");
+            setReviewSaveError(String(err));
+          }
+        }, []);
+        const debouncedPersistReview = useDebouncedCallback(persistReview, SAVE_DEBOUNCE_MS);
+
+        const updateReviewOverall = useCallback((overall) => {
+          setReview((prev) => {
+            const next = { ...prev, overall };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const updateCaseComment = useCallback((caseId, comment) => {
+          if (!caseId) return;
+          setReview((prev) => {
+            const cases = { ...(prev.cases || {}) };
+            const existing = cases[caseId] || { comment: "", bubbles: {} };
+            cases[caseId] = { ...existing, comment };
+            const next = { ...prev, cases };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const updateBubbleComment = useCallback((caseId, bubbleId, comment) => {
+          if (!caseId || !bubbleId) return;
+          setReview((prev) => {
+            const cases = { ...(prev.cases || {}) };
+            const existing = cases[caseId] || { comment: "", bubbles: {} };
+            const bubbles = { ...(existing.bubbles || {}), [bubbleId]: comment };
+            cases[caseId] = { ...existing, bubbles };
+            const next = { ...prev, cases };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const caseCommentMap = useMemo(() => {
+          const map = {};
+          for (const [caseId, data] of Object.entries(review.cases || {})) {
+            map[caseId] = caseHasAnyComment(data);
+          }
+          return map;
+        }, [review]);
+
+        const currentCaseReview = review.cases?.[selectedCaseId];
+        const currentCaseComment = currentCaseReview?.comment || "";
+        const bubbleCommentMap = currentCaseReview?.bubbles || {};
+        const currentBubbleComment = selectedBubbleId ? (bubbleCommentMap[selectedBubbleId] || "") : "";
 
         return (
           <div className="app">
             <aside className="sidebar">
               <h1>Cases</h1>
-              <CaseList cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} />
-              {document ? <BubbleList bubbles={document.bubbles} selected={selectedBubbleId} onSelect={setSelectedBubbleId} /> : null}
+              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} />
+              {document ? (
+                <BubbleList
+                  bubbles={document.bubbles}
+                  selected={selectedBubbleId}
+                  onSelect={setSelectedBubbleId}
+                  hasCommentMap={bubbleCommentMap}
+                />
+              ) : null}
             </aside>
             <main className="main">
               <div className="toolbar">
                 <strong>{selectedCaseId || "—"}</strong>
                 <span className={"save-indicator " + (saveStatus === "dirty" ? "dirty" : saveStatus === "error" ? "error" : "")}>{statusLabel}</span>
+                <span className={"review-indicator " + (reviewSaveStatus === "dirty" ? "dirty" : reviewSaveStatus === "error" ? "error" : "")}>{reviewStatusLabel}</span>
               </div>
+              <details className="overall-region">
+                <summary>全体レビュー</summary>
+                <textarea
+                  value={review.overall || ""}
+                  onChange={(event) => updateReviewOverall(event.target.value)}
+                  placeholder="プロジェクト全体への所感"
+                />
+              </details>
               <div className="canvas-wrap">
                 <div className="stage-shell" ref={stageRef} />
               </div>
@@ -454,7 +703,17 @@
             </main>
             <aside className="inspector">
               <h1>Inspector</h1>
-              <Inspector bubble={selectedBubble} bubbleTypes={bubbleTypes} onChange={updateBubble} columnsError={columnsError} />
+              <Inspector
+                bubble={selectedBubble}
+                bubbleTypes={bubbleTypes}
+                onChange={updateBubble}
+                columnsError={columnsError}
+                selectedCaseId={selectedCaseId}
+                caseComment={currentCaseComment}
+                onChangeCaseComment={(value) => updateCaseComment(selectedCaseId, value)}
+                bubbleComment={currentBubbleComment}
+                onChangeBubbleComment={(value) => selectedBubbleId && updateBubbleComment(selectedCaseId, selectedBubbleId, value)}
+              />
             </aside>
           </div>
         );

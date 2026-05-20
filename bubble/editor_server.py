@@ -19,6 +19,7 @@ from bubble.editor_models import (
     save_case_document,
 )
 from bubble.editor_render import render_single_bubble_sprite
+from bubble.editor_review import load_review, save_review
 from bubble.scene_runtime import RenderConfig
 
 
@@ -157,6 +158,33 @@ def create_editor_app(project_dir: Path) -> Any:
         _case_document_or_404(case_id)
         output_path = rendered_path_for_case(root, case_id)
         return {"available": output_path.exists(), "path": str(output_path)}
+
+    @api.get("/api/cases/{case_id}/thumbnail")
+    def get_case_thumbnail(case_id: str) -> FileResponse:
+        document = _case_document_or_404(case_id)
+        rendered = rendered_path_for_case(root, case_id)
+        if rendered.exists():
+            return FileResponse(rendered, headers={"Cache-Control": "no-cache, must-revalidate"})
+        image_path = resolve_document_image(document, project_dir=root)
+        if not image_path.exists():
+            raise HTTPException(status_code=404, detail=f"image not found: {image_path}")
+        return FileResponse(image_path, headers={"Cache-Control": "no-cache, must-revalidate"})
+
+    @api.get("/api/project/review")
+    def get_review() -> dict[str, Any]:
+        try:
+            return load_review(root)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @api.put("/api/project/review")
+    def put_review(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return save_review(root, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @api.get("/api/cases/{case_id}/bubbles/{bubble_id}/sprite-info")
     def get_sprite_info(case_id: str, bubble_id: str) -> dict[str, Any]:
