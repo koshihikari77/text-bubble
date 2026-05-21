@@ -78,8 +78,16 @@
         font: inherit;
         resize: vertical;
       }
-      .canvas-wrap { overflow: auto; background: #e9ebef; padding: 16px; }
-      .stage-shell { width: max-content; background: #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
+      .canvas-wrap {
+        overflow: hidden;
+        background: #e9ebef;
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 0;
+      }
+      .stage-shell { background: #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
       .statusbar { border-top: 1px solid var(--border); padding: 6px 12px; color: var(--muted); font-size: 12px; min-height: 24px; }
       h1, h2 { font-size: 14px; margin: 0 0 8px; }
       .case-grid {
@@ -437,6 +445,7 @@
 
         useEffect(() => {
           if (!stageRef.current || !imageInfo) return;
+          const containerEl = stageRef.current.parentElement;
           const stage = new Konva.Stage({
             container: stageRef.current,
             width: imageInfo.width,
@@ -447,6 +456,25 @@
           stage.add(imageLayer);
           stage.add(bubbleLayer);
           layersRef.current = { stage, image: imageLayer, bubbles: bubbleLayer };
+
+          const fitToContainer = () => {
+            if (!containerEl) return;
+            const style = window.getComputedStyle(containerEl);
+            const padX = parseFloat(style.paddingLeft || "0") + parseFloat(style.paddingRight || "0");
+            const padY = parseFloat(style.paddingTop || "0") + parseFloat(style.paddingBottom || "0");
+            const availW = Math.max(50, containerEl.clientWidth - padX);
+            const availH = Math.max(50, containerEl.clientHeight - padY);
+            const scale = Math.min(availW / imageInfo.width, availH / imageInfo.height, 1);
+            stage.scale({ x: scale, y: scale });
+            stage.width(imageInfo.width * scale);
+            stage.height(imageInfo.height * scale);
+            stage.batchDraw();
+          };
+          fitToContainer();
+
+          const observer = new ResizeObserver(fitToContainer);
+          if (containerEl) observer.observe(containerEl);
+          window.addEventListener("resize", fitToContainer);
 
           const img = new Image();
           img.crossOrigin = "anonymous";
@@ -463,6 +491,8 @@
           });
 
           return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", fitToContainer);
             stage.destroy();
             layersRef.current = { stage: null, image: null, bubbles: null };
             bubbleNodesRef.current = {};
