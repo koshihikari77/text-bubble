@@ -303,9 +303,22 @@
               <div>
                 <h2>{bubble.bubble_id}</h2>
                 <div className="field">
-                  <label>本文 (text)</label>
-                  <textarea value={bubble.text} readOnly />
-                  <span className="muted">v1 では本文編集は未対応。</span>
+                  <label>本文 (改行 = 列の区切り)</label>
+                  <textarea
+                    value={(bubble.columns || []).join("\n")}
+                    onChange={(event) => {
+                      const lines = event.target.value.split("\n");
+                      const text = lines.join("");
+                      onChange({
+                        ...bubble,
+                        text,
+                        columns: lines,
+                        manual: { ...bubble.manual, text: true, columns: true },
+                      });
+                    }}
+                  />
+                  <span className="muted">縦書きで右の列から左へ。改行を入れた場所が列の区切り。</span>
+                  {columnsError ? <span className="error">{columnsError}</span> : null}
                 </div>
                 <div className="field">
                   <label>bubble_type</label>
@@ -315,17 +328,6 @@
                   >
                     {bubbleTypes.map((t) => (<option key={t} value={t}>{t}</option>))}
                   </select>
-                </div>
-                <div className="field">
-                  <label>columns (1 行 = 1 列)</label>
-                  <textarea
-                    value={(bubble.columns || []).join("\n")}
-                    onChange={(event) => {
-                      const lines = event.target.value.split("\n");
-                      onChange({ ...bubble, columns: lines, manual: { ...bubble.manual, columns: true } });
-                    }}
-                  />
-                  {columnsError ? <span className="error">{columnsError}</span> : <span className="muted">結合した結果が text と一致する必要があります。</span>}
                 </div>
                 <div className="field">
                   <label>bubble コメント</label>
@@ -572,13 +574,21 @@
           layer.batchDraw();
         }, [document, sprites, selectedBubbleId, imageInfo?.width, imageInfo?.height]);
 
-        const persist = useCallback(async (next) => {
+        const persist = useCallback(async (next, refreshSpriteForBubbleId) => {
           try {
             setSaveStatus("saving");
             const saved = await apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next);
             setDocument(saved);
             setSaveStatus("saved");
             setSaveError("");
+            if (refreshSpriteForBubbleId) {
+              const sprite = await fetchSprite(selectedCaseId, refreshSpriteForBubbleId);
+              setSprites((prev2) => {
+                const previous = prev2[refreshSpriteForBubbleId];
+                if (previous && previous.url) URL.revokeObjectURL(previous.url);
+                return { ...prev2, [refreshSpriteForBubbleId]: sprite };
+              });
+            }
           } catch (err) {
             setSaveStatus("error");
             setSaveError(String(err));
@@ -591,39 +601,28 @@
           const columnsValid = joined === nextBubble.text;
           setDocument((prev) => {
             if (!prev) return prev;
-            return { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
-          });
-          if (!columnsValid) {
-            setColumnsError("columns を結合した結果が text と一致しません");
-            return;
-          }
-          setColumnsError("");
-          setSaveStatus("saving");
-          setDocument((prev) => {
-            if (!prev) return prev;
-            const next = { ...prev, bubbles: prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b) };
-            apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next)
-              .then((saved) => {
-                setDocument(saved);
-                setSaveStatus("saved");
-                setSaveError("");
-                return fetchSprite(selectedCaseId, nextBubble.bubble_id);
-              })
-              .then((sprite) => {
-                if (!sprite) return;
-                setSprites((prev2) => {
-                  const previous = prev2[nextBubble.bubble_id];
-                  if (previous && previous.url) URL.revokeObjectURL(previous.url);
-                  return { ...prev2, [nextBubble.bubble_id]: sprite };
-                });
-              })
-              .catch((err) => {
-                setSaveStatus("error");
-                setSaveError(String(err));
-              });
+            const bubbles = prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b);
+            const dialogueLines = [...(prev.dialogue_lines || [])];
+            const ids = Array.isArray(nextBubble.sentence_ids) ? nextBubble.sentence_ids : [];
+            if (ids.length > 0) {
+              const head = ids[0] - 1;
+              if (head >= 0 && head < dialogueLines.length) dialogueLines[head] = nextBubble.text || "";
+              for (let i = 1; i < ids.length; i++) {
+                const idx = ids[i] - 1;
+                if (idx >= 0 && idx < dialogueLines.length) dialogueLines[idx] = "";
+              }
+            }
+            const next = { ...prev, dialogue_lines: dialogueLines, bubbles };
+            if (!columnsValid) {
+              setColumnsError("columns を結合した結果が text と一致しません");
+            } else {
+              setColumnsError("");
+              setSaveStatus("dirty");
+              debouncedPersist(next, nextBubble.bubble_id);
+            }
             return next;
           });
-        }, [selectedCaseId]);
+        }, [debouncedPersist]);
 
         const selectedBubble = useMemo(() => {
           if (!document || !selectedBubbleId) return null;
