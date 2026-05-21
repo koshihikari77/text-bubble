@@ -1106,15 +1106,39 @@ def editor_serve(
     project: Path = typer.Option(Path("out/editor_project"), "--project", help="Editor project directory."),
     host: str = typer.Option("127.0.0.1", "--host", help="Host to bind."),
     port: int = typer.Option(8765, "--port", help="Port to bind."),
-    import_workspace: Path | None = typer.Option(None, "--import-workspace", help="Import a workspace before serving."),
+    import_workspace: Path | None = typer.Option(None, "--import-workspace", help="Import a single workspace before serving."),
     case_id: str | None = typer.Option(None, "--case-id", help="Case id for --import-workspace."),
+    scan_dir: Path | None = typer.Option(
+        None,
+        "--scan-dir",
+        help="Scan the given directory for workspace subdirectories (containing reflow.json and scene.json) and import them all before serving.",
+    ),
 ) -> None:
     try:
-        if import_workspace is not None:
-            from bubble.editor_models import add_workspace_case
+        from bubble.editor_models import add_workspace_case, find_workspaces
 
+        if import_workspace is not None:
             resolved_case_id = case_id or import_workspace.name
             add_workspace_case(project_dir=project, case_id=resolved_case_id, workspace=import_workspace)
+            typer.echo(f"imported workspace: {import_workspace} -> {resolved_case_id}")
+
+        if scan_dir is not None:
+            if not scan_dir.exists() or not scan_dir.is_dir():
+                typer.echo(f"--scan-dir directory not found: {scan_dir}", err=True)
+                raise typer.Exit(code=1)
+            workspaces = find_workspaces(scan_dir)
+            imported = 0
+            failed = 0
+            for workspace in workspaces:
+                try:
+                    add_workspace_case(project_dir=project, case_id=workspace.name, workspace=workspace)
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    typer.echo(f"skipped {workspace}: {exc}", err=True)
+                    continue
+                imported += 1
+            typer.echo(f"scan-dir imported {imported} workspace(s), {failed} failed")
+
         from bubble.editor_server import run_editor_server
 
         typer.echo(f"serving editor: http://{host}:{port}")
