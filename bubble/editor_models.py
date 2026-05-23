@@ -369,7 +369,7 @@ def add_workspace_case(
     case_dir = project_dir / "cases" / case_id
     document_path = case_dir / "document.json"
     generated_dir = case_dir / "generated"
-    render_path = project_dir / "renders" / f"{case_id}.png"
+    render_path = project_dir / "renders" / f"{case_id}.jpg"
     if copy_generated:
         generated_dir.mkdir(parents=True, exist_ok=True)
         for filename in ("metadata.json", "assignment.json", "reflow.json", "scene.json", "plan.json"):
@@ -411,7 +411,7 @@ def generated_dir_for_case(project_dir: Path, case_id: str) -> Path:
 
 
 def rendered_path_for_case(project_dir: Path, case_id: str) -> Path:
-    return project_dir / "renders" / f"{case_id}.png"
+    return project_dir / "renders" / f"{case_id}.jpg"
 
 
 def export_case_document(project_dir: Path, case_id: str) -> dict[str, str]:
