@@ -233,12 +233,13 @@
         }, [delay]);
       }
 
-      function CaseGrid({ cases, selected, onSelect, hasCommentMap, thumbBustKey }) {
+      function CaseGrid({ cases, selected, onSelect, hasCommentMap, thumbBustByCase }) {
         return (
           <div className="case-grid">
             {cases.map((c) => {
               const hasComment = !!hasCommentMap[c.case_id];
-              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${thumbBustKey}`;
+              const bust = thumbBustByCase[c.case_id] || "initial";
+              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${bust}`;
               return (
                 <button
                   key={c.case_id}
@@ -405,7 +406,10 @@
         const [reviewSaveError, setReviewSaveError] = useState("");
         const [renderStatus, setRenderStatus] = useState("idle");
         const [renderError, setRenderError] = useState("");
-        const [thumbBustKey, setThumbBustKey] = useState(() => Date.now());
+        const [thumbBustByCase, setThumbBustByCase] = useState({});
+        const [exportStatus, setExportStatus] = useState("idle");
+        const [exportError, setExportError] = useState("");
+        const [renderAllProgress, setRenderAllProgress] = useState(null);
 
         const stageRef = useRef(null);
         const layersRef = useRef({ stage: null, image: null, bubbles: null });
@@ -640,8 +644,6 @@
 
         const statusLabel = saveStatus === "saving" ? "保存中..." : saveStatus === "saved" ? "保存しました" : saveStatus === "dirty" ? "未保存の変更" : saveStatus === "error" ? `保存失敗: ${saveError}` : "";
         const reviewStatusLabel = reviewSaveStatus === "saving" ? "review 保存中..." : reviewSaveStatus === "saved" ? "review 保存しました" : reviewSaveStatus === "dirty" ? "review 未保存" : reviewSaveStatus === "error" ? `review 保存失敗: ${reviewSaveError}` : "";
-        const renderStatusLabel = renderStatus === "rendering" ? "render 中..." : renderStatus === "done" ? "render 完了" : renderStatus === "error" ? `render 失敗: ${renderError}` : "";
-
         const renderCase = useCallback(async (caseId) => {
           if (!caseId) return;
           try {
@@ -649,13 +651,47 @@
             setRenderError("");
             await apiPost(`/api/cases/${encodeURIComponent(caseId)}/render`);
             setRenderStatus("done");
-            setThumbBustKey(Date.now());
+            setThumbBustByCase((prev) => ({ ...prev, [caseId]: Date.now() }));
             apiGet("/api/project").then((project) => setCases(project.cases || [])).catch(() => {});
           } catch (err) {
             setRenderStatus("error");
             setRenderError(String(err));
           }
         }, []);
+
+        const exportCase = useCallback(async (caseId) => {
+          if (!caseId) return;
+          try {
+            setExportStatus("exporting");
+            setExportError("");
+            await apiPost(`/api/cases/${encodeURIComponent(caseId)}/export`);
+            setExportStatus("done");
+          } catch (err) {
+            setExportStatus("error");
+            setExportError(String(err));
+          }
+        }, []);
+
+        const renderAll = useCallback(async () => {
+          const list = cases;
+          if (!list || list.length === 0) return;
+          let completed = 0;
+          let failed = 0;
+          setRenderAllProgress({ inProgress: true, total: list.length, completed: 0, failed: 0 });
+          for (const c of list) {
+            try {
+              await apiPost(`/api/cases/${encodeURIComponent(c.case_id)}/render`);
+              completed += 1;
+              setThumbBustByCase((prev) => ({ ...prev, [c.case_id]: Date.now() }));
+            } catch (err) {
+              failed += 1;
+              console.warn("render failed", c.case_id, err);
+            }
+            setRenderAllProgress({ inProgress: true, total: list.length, completed, failed });
+          }
+          setRenderAllProgress({ inProgress: false, total: list.length, completed, failed });
+          apiGet("/api/project").then((project) => setCases(project.cases || [])).catch(() => {});
+        }, [cases]);
 
         const persistReview = useCallback(async (nextReview) => {
           try {
@@ -723,7 +759,7 @@
           <div className="app">
             <aside className="sidebar">
               <h1>Cases</h1>
-              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} thumbBustKey={thumbBustKey} />
+              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} thumbBustByCase={thumbBustByCase} />
               {document ? (
                 <BubbleList
                   bubbles={document.bubbles}
@@ -741,12 +777,36 @@
                 <span style={{ marginLeft: "auto" }} />
                 <button
                   type="button"
-                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving"}
+                  disabled={!selectedCaseId || exportStatus === "exporting" || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false)}
+                  onClick={() => exportCase(selectedCaseId)}
+                  title="document.json から generated/{reflow,scene,plan,...}.json を再生成"
+                >
+                  {exportStatus === "exporting" ? "Export..." : "Export"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false)}
                   onClick={() => renderCase(selectedCaseId)}
+                  title="この case の最終 PNG を生成"
                 >
                   {renderStatus === "rendering" ? "Render..." : "Render"}
                 </button>
-                <span className={"review-indicator " + (renderStatus === "error" ? "error" : "")}>{renderStatusLabel}</span>
+                <button
+                  type="button"
+                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
+                  onClick={renderAll}
+                  title="全 case の最終 PNG を順次生成"
+                >
+                  {renderAllProgress?.inProgress ? `Render all (${renderAllProgress.completed}/${renderAllProgress.total})` : "Render all"}
+                </button>
+                <span className={"review-indicator " + ((renderStatus === "error" || exportStatus === "error" || (renderAllProgress && !renderAllProgress.inProgress && renderAllProgress.failed > 0)) ? "error" : "")}>
+                  {renderStatus === "error" ? `render 失敗: ${renderError}` :
+                    exportStatus === "error" ? `export 失敗: ${exportError}` :
+                    renderAllProgress?.inProgress ? `${renderAllProgress.completed}/${renderAllProgress.total} 完了` :
+                    renderAllProgress && !renderAllProgress.inProgress ? `render-all 完了 (success ${renderAllProgress.completed} / failed ${renderAllProgress.failed})` :
+                    exportStatus === "done" ? "export 完了" :
+                    renderStatus === "done" ? "render 完了" : ""}
+                </span>
               </div>
               <details className="overall-region">
                 <summary>全体レビュー</summary>
