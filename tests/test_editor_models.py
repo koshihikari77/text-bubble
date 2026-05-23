@@ -170,7 +170,7 @@ class EditorModelTests(unittest.TestCase):
             with patch("bubble.editor_models.render_scene_bundle") as render_scene_bundle:
                 output_path = render_case_document(project, "case1")
 
-            self.assertEqual(output_path, project / "cases" / "case1" / "renders" / "latest.png")
+            self.assertEqual(output_path, project / "renders" / "case1.png")
             _, scene_plans = load_scene_plan_json(project / "cases" / "case1" / "generated" / "scene.json")
             self.assertEqual(scene_plans[0].anchor_x, 0.8)
             render_scene_bundle.assert_called_once()
