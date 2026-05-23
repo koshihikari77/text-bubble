@@ -197,6 +197,13 @@
         if (!res.ok) throw new Error(await res.text() || res.statusText);
         return res.json();
       }
+      async function apiPost(path, body) {
+        const opts = { method: "POST", headers: { "Content-Type": "application/json" } };
+        if (body !== undefined) opts.body = JSON.stringify(body);
+        const res = await fetch(path, opts);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
 
       async function fetchSprite(caseId, bubbleId) {
         const bust = Date.now();
@@ -226,12 +233,12 @@
         }, [delay]);
       }
 
-      function CaseGrid({ cases, selected, onSelect, hasCommentMap }) {
+      function CaseGrid({ cases, selected, onSelect, hasCommentMap, thumbBustKey }) {
         return (
           <div className="case-grid">
             {cases.map((c) => {
               const hasComment = !!hasCommentMap[c.case_id];
-              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${Date.now()}`;
+              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${thumbBustKey}`;
               return (
                 <button
                   key={c.case_id}
@@ -396,6 +403,9 @@
         const [review, setReview] = useState({ overall: "", cases: {}, orphans: [] });
         const [reviewSaveStatus, setReviewSaveStatus] = useState("idle");
         const [reviewSaveError, setReviewSaveError] = useState("");
+        const [renderStatus, setRenderStatus] = useState("idle");
+        const [renderError, setRenderError] = useState("");
+        const [thumbBustKey, setThumbBustKey] = useState(() => Date.now());
 
         const stageRef = useRef(null);
         const layersRef = useRef({ stage: null, image: null, bubbles: null });
@@ -630,6 +640,22 @@
 
         const statusLabel = saveStatus === "saving" ? "保存中..." : saveStatus === "saved" ? "保存しました" : saveStatus === "dirty" ? "未保存の変更" : saveStatus === "error" ? `保存失敗: ${saveError}` : "";
         const reviewStatusLabel = reviewSaveStatus === "saving" ? "review 保存中..." : reviewSaveStatus === "saved" ? "review 保存しました" : reviewSaveStatus === "dirty" ? "review 未保存" : reviewSaveStatus === "error" ? `review 保存失敗: ${reviewSaveError}` : "";
+        const renderStatusLabel = renderStatus === "rendering" ? "render 中..." : renderStatus === "done" ? "render 完了" : renderStatus === "error" ? `render 失敗: ${renderError}` : "";
+
+        const renderCase = useCallback(async (caseId) => {
+          if (!caseId) return;
+          try {
+            setRenderStatus("rendering");
+            setRenderError("");
+            await apiPost(`/api/cases/${encodeURIComponent(caseId)}/render`);
+            setRenderStatus("done");
+            setThumbBustKey(Date.now());
+            apiGet("/api/project").then((project) => setCases(project.cases || [])).catch(() => {});
+          } catch (err) {
+            setRenderStatus("error");
+            setRenderError(String(err));
+          }
+        }, []);
 
         const persistReview = useCallback(async (nextReview) => {
           try {
@@ -697,7 +723,7 @@
           <div className="app">
             <aside className="sidebar">
               <h1>Cases</h1>
-              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} />
+              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} thumbBustKey={thumbBustKey} />
               {document ? (
                 <BubbleList
                   bubbles={document.bubbles}
@@ -712,6 +738,15 @@
                 <strong>{selectedCaseId || "—"}</strong>
                 <span className={"save-indicator " + (saveStatus === "dirty" ? "dirty" : saveStatus === "error" ? "error" : "")}>{statusLabel}</span>
                 <span className={"review-indicator " + (reviewSaveStatus === "dirty" ? "dirty" : reviewSaveStatus === "error" ? "error" : "")}>{reviewStatusLabel}</span>
+                <span style={{ marginLeft: "auto" }} />
+                <button
+                  type="button"
+                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving"}
+                  onClick={() => renderCase(selectedCaseId)}
+                >
+                  {renderStatus === "rendering" ? "Render..." : "Render"}
+                </button>
+                <span className={"review-indicator " + (renderStatus === "error" ? "error" : "")}>{renderStatusLabel}</span>
               </div>
               <details className="overall-region">
                 <summary>全体レビュー</summary>
