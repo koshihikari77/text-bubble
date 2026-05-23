@@ -407,9 +407,8 @@
         const [renderStatus, setRenderStatus] = useState("idle");
         const [renderError, setRenderError] = useState("");
         const [thumbBustByCase, setThumbBustByCase] = useState({});
-        const [exportStatus, setExportStatus] = useState("idle");
-        const [exportError, setExportError] = useState("");
         const [renderAllProgress, setRenderAllProgress] = useState(null);
+        const [exportAllProgress, setExportAllProgress] = useState(null);
 
         const stageRef = useRef(null);
         const layersRef = useRef({ stage: null, image: null, bubbles: null });
@@ -659,18 +658,24 @@
           }
         }, []);
 
-        const exportCase = useCallback(async (caseId) => {
-          if (!caseId) return;
-          try {
-            setExportStatus("exporting");
-            setExportError("");
-            await apiPost(`/api/cases/${encodeURIComponent(caseId)}/export`);
-            setExportStatus("done");
-          } catch (err) {
-            setExportStatus("error");
-            setExportError(String(err));
+        const exportAll = useCallback(async () => {
+          const list = cases;
+          if (!list || list.length === 0) return;
+          let completed = 0;
+          let failed = 0;
+          setExportAllProgress({ inProgress: true, total: list.length, completed: 0, failed: 0 });
+          for (const c of list) {
+            try {
+              await apiPost(`/api/cases/${encodeURIComponent(c.case_id)}/export`);
+              completed += 1;
+            } catch (err) {
+              failed += 1;
+              console.warn("export failed", c.case_id, err);
+            }
+            setExportAllProgress({ inProgress: true, total: list.length, completed, failed });
           }
-        }, []);
+          setExportAllProgress({ inProgress: false, total: list.length, completed, failed });
+        }, [cases]);
 
         const renderAll = useCallback(async () => {
           const list = cases;
@@ -777,15 +782,7 @@
                 <span style={{ marginLeft: "auto" }} />
                 <button
                   type="button"
-                  disabled={!selectedCaseId || exportStatus === "exporting" || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false)}
-                  onClick={() => exportCase(selectedCaseId)}
-                  title="document.json から generated/{reflow,scene,plan,...}.json を再生成"
-                >
-                  {exportStatus === "exporting" ? "Export..." : "Export"}
-                </button>
-                <button
-                  type="button"
-                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false)}
+                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false)}
                   onClick={() => renderCase(selectedCaseId)}
                   title="この case の最終 PNG を生成"
                 >
@@ -793,18 +790,26 @@
                 </button>
                 <button
                   type="button"
-                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
+                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
+                  onClick={exportAll}
+                  title="全 case の generated/{reflow,scene,plan,...}.json を再生成"
+                >
+                  {exportAllProgress?.inProgress ? `Export all (${exportAllProgress.completed}/${exportAllProgress.total})` : "Export all"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
                   onClick={renderAll}
                   title="全 case の最終 PNG を順次生成"
                 >
                   {renderAllProgress?.inProgress ? `Render all (${renderAllProgress.completed}/${renderAllProgress.total})` : "Render all"}
                 </button>
-                <span className={"review-indicator " + ((renderStatus === "error" || exportStatus === "error" || (renderAllProgress && !renderAllProgress.inProgress && renderAllProgress.failed > 0)) ? "error" : "")}>
+                <span className={"review-indicator " + ((renderStatus === "error" || (renderAllProgress && !renderAllProgress.inProgress && renderAllProgress.failed > 0) || (exportAllProgress && !exportAllProgress.inProgress && exportAllProgress.failed > 0)) ? "error" : "")}>
                   {renderStatus === "error" ? `render 失敗: ${renderError}` :
-                    exportStatus === "error" ? `export 失敗: ${exportError}` :
-                    renderAllProgress?.inProgress ? `${renderAllProgress.completed}/${renderAllProgress.total} 完了` :
+                    renderAllProgress?.inProgress ? `render ${renderAllProgress.completed}/${renderAllProgress.total}` :
+                    exportAllProgress?.inProgress ? `export ${exportAllProgress.completed}/${exportAllProgress.total}` :
                     renderAllProgress && !renderAllProgress.inProgress ? `render-all 完了 (success ${renderAllProgress.completed} / failed ${renderAllProgress.failed})` :
-                    exportStatus === "done" ? "export 完了" :
+                    exportAllProgress && !exportAllProgress.inProgress ? `export-all 完了 (success ${exportAllProgress.completed} / failed ${exportAllProgress.failed})` :
                     renderStatus === "done" ? "render 完了" : ""}
                 </span>
               </div>
