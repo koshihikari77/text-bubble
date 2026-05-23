@@ -577,8 +577,7 @@
         const persist = useCallback(async (next, refreshSpriteForBubbleId) => {
           try {
             setSaveStatus("saving");
-            const saved = await apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next);
-            setDocument(saved);
+            await apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next);
             setSaveStatus("saved");
             setSaveError("");
             if (refreshSpriteForBubbleId) {
@@ -635,8 +634,7 @@
         const persistReview = useCallback(async (nextReview) => {
           try {
             setReviewSaveStatus("saving");
-            const saved = await apiPut("/api/project/review", reviewToServer(nextReview));
-            setReview(reviewFromServer(saved));
+            await apiPut("/api/project/review", reviewToServer(nextReview));
             setReviewSaveStatus("saved");
             setReviewSaveError("");
           } catch (err) {
