@@ -28,10 +28,11 @@ TR_CHARS = frozenset(
 TU_CHARS = frozenset(
     "、。，．・：；？！"
     "｡､･"
+    "♡♥❤❥❣"  # hearts (upright in vertical text)
 )
 
 # Characters that are "Tu" in Unicode but currently render incorrectly in resvg for our workload.
-TU_RESVG_OVERRIDE_CHARS = frozenset({"？", "！"})
+TU_RESVG_OVERRIDE_CHARS = frozenset({"？", "！", "♡", "♥", "❤", "❥", "❣"})
 
 
 @dataclass(frozen=True)
