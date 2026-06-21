@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>text-bubble editor</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --border: #d7d8dc;
+        --panel: #f6f7f9;
+        --ink: #1d1f24;
+        --muted: #626873;
+        --accent: #0f766e;
+        --danger: #b91c1c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--ink);
+        background: #ffffff;
+      }
+      button, select, textarea, input { font: inherit; }
+      button {
+        border: 1px solid var(--border);
+        background: #ffffff;
+        color: var(--ink);
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 320px minmax(420px, 1fr) 340px;
+        height: 100vh;
+        min-width: 1040px;
+      }
+      .sidebar, .inspector {
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        overflow: auto;
+        padding: 12px;
+      }
+      .inspector { border-right: 0; border-left: 1px solid var(--border); }
+      .main { display: grid; grid-template-rows: auto auto 1fr auto; min-width: 0; }
+      .toolbar {
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        padding: 8px 12px;
+        align-items: center;
+      }
+      .overall-region {
+        border-bottom: 1px solid var(--border);
+        padding: 6px 12px;
+        background: #fbfbfc;
+      }
+      .overall-region > summary {
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--ink);
+        user-select: none;
+      }
+      .overall-region textarea {
+        width: 100%;
+        min-height: 60px;
+        margin-top: 6px;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #ffffff;
+        font: inherit;
+        resize: vertical;
+      }
+      .canvas-wrap {
+        overflow: hidden;
+        background: #e9ebef;
+        padding: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 0;
+      }
+      .stage-shell { background: #ffffff; box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
+      .statusbar { border-top: 1px solid var(--border); padding: 6px 12px; color: var(--muted); font-size: 12px; min-height: 24px; }
+      h1, h2 { font-size: 14px; margin: 0 0 8px; }
+      .case-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 8px;
+      }
+      .case-card {
+        position: relative;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        cursor: pointer;
+        padding: 0;
+        font: inherit;
+        text-align: left;
+        color: inherit;
+      }
+      .case-card .thumb {
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        background: #e9ebef;
+        display: block;
+      }
+      .case-card .thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .case-card .caption {
+        padding: 4px 6px;
+        font-size: 11px;
+        line-height: 1.3;
+      }
+      .case-card .caption .case-id {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .case-card .caption .case-status { color: var(--muted); }
+      .case-card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+      .comment-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        background: rgba(15, 118, 110, 0.92);
+        color: #fff;
+        font-size: 11px;
+        line-height: 1;
+        padding: 3px 5px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+      .bubble-list { display: grid; gap: 4px; }
+      .bubble-button {
+        text-align: left;
+        width: 100%;
+        padding: 6px 8px;
+        position: relative;
+      }
+      .bubble-button.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+      .bubble-button .comment-badge {
+        top: 50%;
+        transform: translateY(-50%);
+      }
+      .field { display: grid; gap: 4px; margin-bottom: 12px; }
+      .field label { font-size: 12px; color: var(--muted); }
+      .field select, .field textarea, .field input {
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #ffffff;
+      }
+      .field textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; min-height: 110px; resize: vertical; }
+      .field textarea.comment { font-family: inherit; min-height: 70px; }
+      .error { color: var(--danger); font-size: 12px; }
+      .muted { color: var(--muted); font-size: 12px; }
+      .save-indicator { font-size: 12px; color: var(--muted); }
+      .save-indicator.dirty { color: var(--accent); }
+      .save-indicator.error { color: var(--danger); }
+      .review-indicator { font-size: 11px; color: var(--muted); margin-left: 8px; }
+      .review-indicator.dirty { color: var(--accent); }
+      .review-indicator.error { color: var(--danger); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-type="module">
+      const { useCallback, useEffect, useMemo, useRef, useState } = React;
+
+      const SAVE_DEBOUNCE_MS = 350;
+
+      async function apiGet(path) {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
+      async function apiPut(path, body) {
+        const res = await fetch(path, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
+      async function apiPost(path, body) {
+        const opts = { method: "POST", headers: { "Content-Type": "application/json" } };
+        if (body !== undefined) opts.body = JSON.stringify(body);
+        const res = await fetch(path, opts);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        return res.json();
+      }
+
+      async function fetchSprite(caseId, bubbleId) {
+        const bust = Date.now();
+        const res = await fetch(`/api/cases/${encodeURIComponent(caseId)}/bubbles/${encodeURIComponent(bubbleId)}/sprite?ts=${bust}`);
+        if (!res.ok) throw new Error(await res.text() || res.statusText);
+        const headers = res.headers;
+        const blob = await res.blob();
+        return {
+          url: URL.createObjectURL(blob),
+          width: Number(headers.get("X-Sprite-Width") || 0),
+          height: Number(headers.get("X-Sprite-Height") || 0),
+          anchorOffsetX: Number(headers.get("X-Sprite-Anchor-X") || 0),
+          anchorOffsetY: Number(headers.get("X-Sprite-Anchor-Y") || 0),
+          version: headers.get("X-Sprite-Version") || "",
+        };
+      }
+
+      function clamp01(value) { return Math.max(0, Math.min(1, value)); }
+
+      function useDebouncedCallback(fn, delay) {
+        const ref = useRef(fn);
+        const timer = useRef(null);
+        useEffect(() => { ref.current = fn; }, [fn]);
+        return useCallback((...args) => {
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => ref.current(...args), delay);
+        }, [delay]);
+      }
+
+      function CaseGrid({ cases, selected, onSelect, hasCommentMap, thumbBustByCase }) {
+        return (
+          <div className="case-grid">
+            {cases.map((c) => {
+              const hasComment = !!hasCommentMap[c.case_id];
+              const bust = thumbBustByCase[c.case_id] || "initial";
+              const src = `/api/cases/${encodeURIComponent(c.case_id)}/thumbnail?ts=${bust}`;
+              return (
+                <button
+                  key={c.case_id}
+                  className={"case-card" + (c.case_id === selected ? " active" : "")}
+                  onClick={() => onSelect(c.case_id)}
+                  title={c.case_id}
+                >
+                  <span className="thumb">
+                    <img src={src} alt={c.case_id} loading="lazy" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
+                  </span>
+                  {hasComment ? <span className="comment-badge" title="コメントあり">★</span> : null}
+                  <span className="caption">
+                    <span className="case-id">{c.case_id}</span>
+                    {c.status ? <span className="case-status"> · {c.status}</span> : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      }
+
+      function BubbleList({ bubbles, selected, onSelect, hasCommentMap }) {
+        return (
+          <div className="bubble-list" style={{ marginTop: 12 }}>
+            <h2>Bubbles</h2>
+            {bubbles.map((b) => (
+              <button
+                key={b.bubble_id}
+                className={"bubble-button" + (b.bubble_id === selected ? " active" : "")}
+                onClick={() => onSelect(b.bubble_id)}
+              >
+                <div>{b.bubble_id}</div>
+                <div className="muted">{b.bubble_type}</div>
+                {hasCommentMap[b.bubble_id] ? <span className="comment-badge" title="コメントあり">★</span> : null}
+              </button>
+            ))}
+          </div>
+        );
+      }
+
+      function Inspector({
+        bubble,
+        bubbleTypes,
+        onChange,
+        columnsError,
+        caseComment,
+        onChangeCaseComment,
+        bubbleComment,
+        onChangeBubbleComment,
+        selectedCaseId,
+      }) {
+        return (
+          <div>
+            {selectedCaseId ? (
+              <div className="field">
+                <label>case コメント</label>
+                <textarea
+                  className="comment"
+                  value={caseComment || ""}
+                  onChange={(event) => onChangeCaseComment(event.target.value)}
+                  placeholder={`${selectedCaseId} 全体への所感`}
+                />
+              </div>
+            ) : null}
+            {!bubble ? (
+              <div className="muted">バブルを選択してください。</div>
+            ) : (
+              <div>
+                <h2>{bubble.bubble_id}</h2>
+                <div className="field">
+                  <label>本文 (改行 = 列の区切り)</label>
+                  <textarea
+                    value={(bubble.columns || []).join("\n")}
+                    onChange={(event) => {
+                      const lines = event.target.value.split("\n");
+                      const text = lines.join("");
+                      onChange({
+                        ...bubble,
+                        text,
+                        columns: lines,
+                        manual: { ...bubble.manual, text: true, columns: true },
+                      });
+                    }}
+                  />
+                  <span className="muted">縦書きで右の列から左へ。改行を入れた場所が列の区切り。</span>
+                  {columnsError ? <span className="error">{columnsError}</span> : null}
+                </div>
+                <div className="field">
+                  <label>bubble_type</label>
+                  <select
+                    value={bubble.bubble_type}
+                    onChange={(event) => onChange({ ...bubble, bubble_type: event.target.value, manual: { ...bubble.manual, bubble_type: true } })}
+                  >
+                    {bubbleTypes.map((t) => (<option key={t} value={t}>{t}</option>))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>bubble コメント</label>
+                  <textarea
+                    className="comment"
+                    value={bubbleComment || ""}
+                    onChange={(event) => onChangeBubbleComment(event.target.value)}
+                    placeholder="この吹き出しへの所感"
+                  />
+                </div>
+                <div className="field">
+                  <label>placement</label>
+                  <div className="muted">
+                    anchor_x = {bubble.placement.anchor_x.toFixed(3)}, anchor_y = {bubble.placement.anchor_y.toFixed(3)}
+                  </div>
+                  <div className="muted">manual: {Object.entries(bubble.manual || {}).filter(([, v]) => v).map(([k]) => k).join(", ") || "(なし)"}</div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function reviewFromServer(serverReview) {
+        const cases = {};
+        for (const c of (serverReview && serverReview.cases) || []) {
+          const bubbles = {};
+          for (const b of c.bubbles || []) bubbles[b.bubble_id] = b.comment || "";
+          cases[c.case_id] = { comment: c.comment || "", bubbles };
+        }
+        return { overall: (serverReview && serverReview.overall) || "", cases, orphans: (serverReview && serverReview.orphans) || [] };
+      }
+
+      function reviewToServer(local) {
+        const cases = [];
+        for (const [caseId, data] of Object.entries(local.cases || {})) {
+          const bubbles = [];
+          for (const [bubbleId, comment] of Object.entries(data.bubbles || {})) {
+            if (comment) bubbles.push({ bubble_id: bubbleId, comment });
+          }
+          if (data.comment || bubbles.length) cases.push({ case_id: caseId, comment: data.comment || "", bubbles });
+        }
+        return { overall: local.overall || "", cases, orphans: local.orphans || [] };
+      }
+
+      function caseHasAnyComment(reviewCase) {
+        if (!reviewCase) return false;
+        if (reviewCase.comment) return true;
+        for (const v of Object.values(reviewCase.bubbles || {})) {
+          if (v) return true;
+        }
+        return false;
+      }
+
+      function App() {
+        const [cases, setCases] = useState([]);
+        const [bubbleTypes, setBubbleTypes] = useState([]);
+        const [selectedCaseId, setSelectedCaseId] = useState(null);
+        const [document, setDocument] = useState(null);
+        const [imageInfo, setImageInfo] = useState(null);
+        const [sprites, setSprites] = useState({});
+        const [selectedBubbleId, setSelectedBubbleId] = useState(null);
+        const [saveStatus, setSaveStatus] = useState("idle");
+        const [saveError, setSaveError] = useState("");
+        const [columnsError, setColumnsError] = useState("");
+        const [review, setReview] = useState({ overall: "", cases: {}, orphans: [] });
+        const [reviewSaveStatus, setReviewSaveStatus] = useState("idle");
+        const [reviewSaveError, setReviewSaveError] = useState("");
+        const [renderStatus, setRenderStatus] = useState("idle");
+        const [renderError, setRenderError] = useState("");
+        const [thumbBustByCase, setThumbBustByCase] = useState({});
+        const [renderAllProgress, setRenderAllProgress] = useState(null);
+        const [exportAllProgress, setExportAllProgress] = useState(null);
+
+        const stageRef = useRef(null);
+        const layersRef = useRef({ stage: null, image: null, bubbles: null });
+        const bubbleNodesRef = useRef({});
+        const imageObjectRef = useRef(null);
+
+        useEffect(() => {
+          apiGet("/api/project").then((project) => {
+            setCases(project.cases || []);
+            if (!selectedCaseId && project.cases && project.cases.length) {
+              setSelectedCaseId(project.cases[0].case_id);
+            }
+          }).catch((err) => setSaveError(String(err)));
+          apiGet("/api/bubble-types").then((res) => setBubbleTypes(res.types || []));
+          apiGet("/api/project/review").then((res) => setReview(reviewFromServer(res))).catch((err) => setReviewSaveError(String(err)));
+        }, []);
+
+        useEffect(() => {
+          if (!selectedCaseId) return;
+          setSprites({});
+          setSelectedBubbleId(null);
+          setImageInfo(null);
+          setDocument(null);
+          apiGet(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`).then(setDocument).catch((err) => setSaveError(String(err)));
+          apiGet(`/api/cases/${encodeURIComponent(selectedCaseId)}/image-info`).then(setImageInfo).catch((err) => setSaveError(String(err)));
+        }, [selectedCaseId]);
+
+        useEffect(() => {
+          if (!document || !selectedCaseId) return;
+          let cancelled = false;
+          (async () => {
+            const updates = {};
+            for (const bubble of document.bubbles) {
+              try {
+                const sprite = await fetchSprite(selectedCaseId, bubble.bubble_id);
+                if (cancelled) {
+                  URL.revokeObjectURL(sprite.url);
+                  return;
+                }
+                updates[bubble.bubble_id] = sprite;
+              } catch (err) {
+                console.warn("sprite fetch failed", bubble.bubble_id, err);
+              }
+            }
+            if (!cancelled) setSprites((prev) => ({ ...prev, ...updates }));
+          })();
+          return () => { cancelled = true; };
+        }, [document?.bubbles?.map((b) => b.bubble_id).join(","), selectedCaseId]);
+
+        useEffect(() => {
+          if (!stageRef.current || !imageInfo) return;
+          const containerEl = stageRef.current.parentElement;
+          const stage = new Konva.Stage({
+            container: stageRef.current,
+            width: imageInfo.width,
+            height: imageInfo.height,
+          });
+          const imageLayer = new Konva.Layer();
+          const bubbleLayer = new Konva.Layer();
+          stage.add(imageLayer);
+          stage.add(bubbleLayer);
+          layersRef.current = { stage, image: imageLayer, bubbles: bubbleLayer };
+
+          const fitToContainer = () => {
+            if (!containerEl) return;
+            const style = window.getComputedStyle(containerEl);
+            const padX = parseFloat(style.paddingLeft || "0") + parseFloat(style.paddingRight || "0");
+            const padY = parseFloat(style.paddingTop || "0") + parseFloat(style.paddingBottom || "0");
+            const availW = Math.max(50, containerEl.clientWidth - padX);
+            const availH = Math.max(50, containerEl.clientHeight - padY);
+            const scale = Math.min(availW / imageInfo.width, availH / imageInfo.height, 1);
+            stage.scale({ x: scale, y: scale });
+            stage.width(imageInfo.width * scale);
+            stage.height(imageInfo.height * scale);
+            stage.batchDraw();
+          };
+          fitToContainer();
+
+          const observer = new ResizeObserver(fitToContainer);
+          if (containerEl) observer.observe(containerEl);
+          window.addEventListener("resize", fitToContainer);
+
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+          img.onload = () => {
+            const node = new Konva.Image({ image: img, width: imageInfo.width, height: imageInfo.height });
+            imageLayer.add(node);
+            imageLayer.draw();
+            imageObjectRef.current = img;
+          };
+          img.src = `/api/cases/${encodeURIComponent(selectedCaseId)}/image`;
+
+          stage.on("click tap", (event) => {
+            if (event.target === stage) setSelectedBubbleId(null);
+          });
+
+          return () => {
+            observer.disconnect();
+            window.removeEventListener("resize", fitToContainer);
+            stage.destroy();
+            layersRef.current = { stage: null, image: null, bubbles: null };
+            bubbleNodesRef.current = {};
+            if (imageObjectRef.current) imageObjectRef.current = null;
+          };
+        }, [selectedCaseId, imageInfo?.width, imageInfo?.height]);
+
+        useEffect(() => {
+          const layer = layersRef.current.bubbles;
+          if (!layer || !imageInfo || !document) return;
+          const nodes = bubbleNodesRef.current;
+          const seen = new Set();
+          for (const bubble of document.bubbles) {
+            seen.add(bubble.bubble_id);
+            const sprite = sprites[bubble.bubble_id];
+            if (!sprite) continue;
+            const anchorPxX = bubble.placement.anchor_x * imageInfo.width;
+            const anchorPxY = bubble.placement.anchor_y * imageInfo.height;
+            const left = anchorPxX - sprite.anchorOffsetX;
+            const top = anchorPxY - sprite.anchorOffsetY;
+            let node = nodes[bubble.bubble_id];
+            const isSelected = bubble.bubble_id === selectedBubbleId;
+            if (!node) {
+              node = new Konva.Image({ x: left, y: top, width: sprite.width, height: sprite.height, draggable: true });
+              node.on("mousedown touchstart", () => setSelectedBubbleId(bubble.bubble_id));
+              node.on("dragend", () => {
+                const offsetX = Number(node.getAttr("spriteAnchorX") || 0);
+                const offsetY = Number(node.getAttr("spriteAnchorY") || 0);
+                const newAnchorX = clamp01((node.x() + offsetX) / imageInfo.width);
+                const newAnchorY = clamp01((node.y() + offsetY) / imageInfo.height);
+                setDocument((prev) => {
+                  if (!prev) return prev;
+                  const bubbles = prev.bubbles.map((b) =>
+                    b.bubble_id === bubble.bubble_id
+                      ? { ...b, placement: { anchor_x: newAnchorX, anchor_y: newAnchorY }, manual: { ...b.manual, placement: true } }
+                      : b
+                  );
+                  const next = { ...prev, bubbles };
+                  setSaveStatus("dirty");
+                  debouncedPersist(next);
+                  return next;
+                });
+              });
+              node.stroke("#0f766e");
+              node.strokeWidth(0);
+              layer.add(node);
+              nodes[bubble.bubble_id] = node;
+            }
+            node.setAttr("spriteAnchorX", sprite.anchorOffsetX);
+            node.setAttr("spriteAnchorY", sprite.anchorOffsetY);
+            const previousVersion = node.getAttr("spriteVersion");
+            if (previousVersion !== sprite.version) {
+              const imageEl = new Image();
+              imageEl.onload = () => {
+                node.image(imageEl);
+                node.width(sprite.width);
+                node.height(sprite.height);
+                node.setAttr("spriteVersion", sprite.version);
+                layer.batchDraw();
+              };
+              imageEl.src = sprite.url;
+              if (imageEl.complete && imageEl.naturalWidth > 0) {
+                imageEl.onload();
+              }
+            }
+            node.x(left);
+            node.y(top);
+            node.strokeWidth(isSelected ? 2 : 0);
+            node.moveToTop();
+          }
+          for (const bubbleId of Object.keys(nodes)) {
+            if (!seen.has(bubbleId)) {
+              nodes[bubbleId].destroy();
+              delete nodes[bubbleId];
+            }
+          }
+          layer.batchDraw();
+        }, [document, sprites, selectedBubbleId, imageInfo?.width, imageInfo?.height]);
+
+        const persist = useCallback(async (next, refreshSpriteForBubbleId) => {
+          try {
+            setSaveStatus("saving");
+            await apiPut(`/api/cases/${encodeURIComponent(selectedCaseId)}/document`, next);
+            setSaveStatus("saved");
+            setSaveError("");
+            if (refreshSpriteForBubbleId) {
+              const sprite = await fetchSprite(selectedCaseId, refreshSpriteForBubbleId);
+              setSprites((prev2) => {
+                const previous = prev2[refreshSpriteForBubbleId];
+                if (previous && previous.url) URL.revokeObjectURL(previous.url);
+                return { ...prev2, [refreshSpriteForBubbleId]: sprite };
+              });
+            }
+          } catch (err) {
+            setSaveStatus("error");
+            setSaveError(String(err));
+          }
+        }, [selectedCaseId]);
+        const debouncedPersist = useDebouncedCallback(persist, SAVE_DEBOUNCE_MS);
+
+        const updateBubble = useCallback((nextBubble) => {
+          const joined = (nextBubble.columns || []).join("");
+          const columnsValid = joined === nextBubble.text;
+          setDocument((prev) => {
+            if (!prev) return prev;
+            const bubbles = prev.bubbles.map((b) => b.bubble_id === nextBubble.bubble_id ? nextBubble : b);
+            const dialogueLines = [...(prev.dialogue_lines || [])];
+            const ids = Array.isArray(nextBubble.sentence_ids) ? nextBubble.sentence_ids : [];
+            if (ids.length > 0) {
+              const head = ids[0] - 1;
+              if (head >= 0 && head < dialogueLines.length) dialogueLines[head] = nextBubble.text || "";
+              for (let i = 1; i < ids.length; i++) {
+                const idx = ids[i] - 1;
+                if (idx >= 0 && idx < dialogueLines.length) dialogueLines[idx] = "";
+              }
+            }
+            const next = { ...prev, dialogue_lines: dialogueLines, bubbles };
+            if (!columnsValid) {
+              setColumnsError("columns を結合した結果が text と一致しません");
+            } else {
+              setColumnsError("");
+              setSaveStatus("dirty");
+              debouncedPersist(next, nextBubble.bubble_id);
+            }
+            return next;
+          });
+        }, [debouncedPersist]);
+
+        const selectedBubble = useMemo(() => {
+          if (!document || !selectedBubbleId) return null;
+          return document.bubbles.find((b) => b.bubble_id === selectedBubbleId) || null;
+        }, [document, selectedBubbleId]);
+
+        const statusLabel = saveStatus === "saving" ? "保存中..." : saveStatus === "saved" ? "保存しました" : saveStatus === "dirty" ? "未保存の変更" : saveStatus === "error" ? `保存失敗: ${saveError}` : "";
+        const reviewStatusLabel = reviewSaveStatus === "saving" ? "review 保存中..." : reviewSaveStatus === "saved" ? "review 保存しました" : reviewSaveStatus === "dirty" ? "review 未保存" : reviewSaveStatus === "error" ? `review 保存失敗: ${reviewSaveError}` : "";
+        const renderCase = useCallback(async (caseId) => {
+          if (!caseId) return;
+          try {
+            setRenderStatus("rendering");
+            setRenderError("");
+            await apiPost(`/api/cases/${encodeURIComponent(caseId)}/render`);
+            setRenderStatus("done");
+            setThumbBustByCase((prev) => ({ ...prev, [caseId]: Date.now() }));
+            apiGet("/api/project").then((project) => setCases(project.cases || [])).catch(() => {});
+          } catch (err) {
+            setRenderStatus("error");
+            setRenderError(String(err));
+          }
+        }, []);
+
+        const exportAll = useCallback(async () => {
+          const list = cases;
+          if (!list || list.length === 0) return;
+          let completed = 0;
+          let failed = 0;
+          setExportAllProgress({ inProgress: true, total: list.length, completed: 0, failed: 0 });
+          for (const c of list) {
+            try {
+              await apiPost(`/api/cases/${encodeURIComponent(c.case_id)}/export`);
+              completed += 1;
+            } catch (err) {
+              failed += 1;
+              console.warn("export failed", c.case_id, err);
+            }
+            setExportAllProgress({ inProgress: true, total: list.length, completed, failed });
+          }
+          setExportAllProgress({ inProgress: false, total: list.length, completed, failed });
+        }, [cases]);
+
+        const renderAll = useCallback(async () => {
+          const list = cases;
+          if (!list || list.length === 0) return;
+          let completed = 0;
+          let failed = 0;
+          setRenderAllProgress({ inProgress: true, total: list.length, completed: 0, failed: 0 });
+          for (const c of list) {
+            try {
+              await apiPost(`/api/cases/${encodeURIComponent(c.case_id)}/render`);
+              completed += 1;
+              setThumbBustByCase((prev) => ({ ...prev, [c.case_id]: Date.now() }));
+            } catch (err) {
+              failed += 1;
+              console.warn("render failed", c.case_id, err);
+            }
+            setRenderAllProgress({ inProgress: true, total: list.length, completed, failed });
+          }
+          setRenderAllProgress({ inProgress: false, total: list.length, completed, failed });
+          apiGet("/api/project").then((project) => setCases(project.cases || [])).catch(() => {});
+        }, [cases]);
+
+        const persistReview = useCallback(async (nextReview) => {
+          try {
+            setReviewSaveStatus("saving");
+            await apiPut("/api/project/review", reviewToServer(nextReview));
+            setReviewSaveStatus("saved");
+            setReviewSaveError("");
+          } catch (err) {
+            setReviewSaveStatus("error");
+            setReviewSaveError(String(err));
+          }
+        }, []);
+        const debouncedPersistReview = useDebouncedCallback(persistReview, SAVE_DEBOUNCE_MS);
+
+        const updateReviewOverall = useCallback((overall) => {
+          setReview((prev) => {
+            const next = { ...prev, overall };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const updateCaseComment = useCallback((caseId, comment) => {
+          if (!caseId) return;
+          setReview((prev) => {
+            const cases = { ...(prev.cases || {}) };
+            const existing = cases[caseId] || { comment: "", bubbles: {} };
+            cases[caseId] = { ...existing, comment };
+            const next = { ...prev, cases };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const updateBubbleComment = useCallback((caseId, bubbleId, comment) => {
+          if (!caseId || !bubbleId) return;
+          setReview((prev) => {
+            const cases = { ...(prev.cases || {}) };
+            const existing = cases[caseId] || { comment: "", bubbles: {} };
+            const bubbles = { ...(existing.bubbles || {}), [bubbleId]: comment };
+            cases[caseId] = { ...existing, bubbles };
+            const next = { ...prev, cases };
+            setReviewSaveStatus("dirty");
+            debouncedPersistReview(next);
+            return next;
+          });
+        }, [debouncedPersistReview]);
+
+        const caseCommentMap = useMemo(() => {
+          const map = {};
+          for (const [caseId, data] of Object.entries(review.cases || {})) {
+            map[caseId] = caseHasAnyComment(data);
+          }
+          return map;
+        }, [review]);
+
+        const currentCaseReview = review.cases?.[selectedCaseId];
+        const currentCaseComment = currentCaseReview?.comment || "";
+        const bubbleCommentMap = currentCaseReview?.bubbles || {};
+        const currentBubbleComment = selectedBubbleId ? (bubbleCommentMap[selectedBubbleId] || "") : "";
+
+        return (
+          <div className="app">
+            <aside className="sidebar">
+              <h1>Cases</h1>
+              <CaseGrid cases={cases} selected={selectedCaseId} onSelect={setSelectedCaseId} hasCommentMap={caseCommentMap} thumbBustByCase={thumbBustByCase} />
+              {document ? (
+                <BubbleList
+                  bubbles={document.bubbles}
+                  selected={selectedBubbleId}
+                  onSelect={setSelectedBubbleId}
+                  hasCommentMap={bubbleCommentMap}
+                />
+              ) : null}
+            </aside>
+            <main className="main">
+              <div className="toolbar">
+                <strong>{selectedCaseId || "—"}</strong>
+                <span className={"save-indicator " + (saveStatus === "dirty" ? "dirty" : saveStatus === "error" ? "error" : "")}>{statusLabel}</span>
+                <span className={"review-indicator " + (reviewSaveStatus === "dirty" ? "dirty" : reviewSaveStatus === "error" ? "error" : "")}>{reviewStatusLabel}</span>
+                <span style={{ marginLeft: "auto" }} />
+                <button
+                  type="button"
+                  disabled={!selectedCaseId || renderStatus === "rendering" || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false)}
+                  onClick={() => renderCase(selectedCaseId)}
+                  title="この case の最終 PNG を生成"
+                >
+                  {renderStatus === "rendering" ? "Render..." : "Render"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
+                  onClick={exportAll}
+                  title="全 case の generated/{reflow,scene,plan,...}.json を再生成"
+                >
+                  {exportAllProgress?.inProgress ? `Export all (${exportAllProgress.completed}/${exportAllProgress.total})` : "Export all"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!cases.length || saveStatus === "saving" || (renderAllProgress?.inProgress ?? false) || (exportAllProgress?.inProgress ?? false) || renderStatus === "rendering"}
+                  onClick={renderAll}
+                  title="全 case の最終 PNG を順次生成"
+                >
+                  {renderAllProgress?.inProgress ? `Render all (${renderAllProgress.completed}/${renderAllProgress.total})` : "Render all"}
+                </button>
+                <span className={"review-indicator " + ((renderStatus === "error" || (renderAllProgress && !renderAllProgress.inProgress && renderAllProgress.failed > 0) || (exportAllProgress && !exportAllProgress.inProgress && exportAllProgress.failed > 0)) ? "error" : "")}>
+                  {renderStatus === "error" ? `render 失敗: ${renderError}` :
+                    renderAllProgress?.inProgress ? `render ${renderAllProgress.completed}/${renderAllProgress.total}` :
+                    exportAllProgress?.inProgress ? `export ${exportAllProgress.completed}/${exportAllProgress.total}` :
+                    renderAllProgress && !renderAllProgress.inProgress ? `render-all 完了 (success ${renderAllProgress.completed} / failed ${renderAllProgress.failed})` :
+                    exportAllProgress && !exportAllProgress.inProgress ? `export-all 完了 (success ${exportAllProgress.completed} / failed ${exportAllProgress.failed})` :
+                    renderStatus === "done" ? "render 完了" : ""}
+                </span>
+              </div>
+              <details className="overall-region">
+                <summary>全体レビュー</summary>
+                <textarea
+                  value={review.overall || ""}
+                  onChange={(event) => updateReviewOverall(event.target.value)}
+                  placeholder="プロジェクト全体への所感"
+                />
+              </details>
+              <div className="canvas-wrap">
+                <div className="stage-shell" ref={stageRef} />
+              </div>
+              <div className="statusbar">
+                {imageInfo ? `${imageInfo.width} x ${imageInfo.height}` : ""}
+              </div>
+            </main>
+            <aside className="inspector">
+              <h1>Inspector</h1>
+              <Inspector
+                bubble={selectedBubble}
+                bubbleTypes={bubbleTypes}
+                onChange={updateBubble}
+                columnsError={columnsError}
+                selectedCaseId={selectedCaseId}
+                caseComment={currentCaseComment}
+                onChangeCaseComment={(value) => updateCaseComment(selectedCaseId, value)}
+                bubbleComment={currentBubbleComment}
+                onChangeBubbleComment={(value) => selectedBubbleId && updateBubbleComment(selectedCaseId, selectedBubbleId, value)}
+              />
+            </aside>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(window.document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>

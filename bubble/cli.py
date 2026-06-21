@@ -51,7 +51,9 @@ DEFAULT_SCENE_PLANNER = default_scene_planner()
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="Generate manga-style vertical speech bubbles.")
 experimental_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Experimental scene-placement tools.")
+editor_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Human-in-the-loop bubble editor.")
 app.add_typer(experimental_app, name="experimental")
+app.add_typer(editor_app, name="editor")
 
 
 @dataclass
@@ -1029,6 +1031,121 @@ def experimental_batch_place(
     if bubble_asset is not None:
         argv.extend(["--bubble-asset", str(bubble_asset)])
     raise typer.Exit(code=batch_place.main(argv))
+
+
+@editor_app.command("import-workspace")
+def editor_import_workspace(
+    ctx: typer.Context,
+    project: Path = typer.Option(Path("out/editor_project"), "--project", help="Editor project directory."),
+    case_id: str = typer.Option(..., "--case-id", help="Case id to create or replace."),
+    source_workspace: Path | None = typer.Option(
+        None,
+        "--source-workspace",
+        help="Existing text-bubble workspace. Defaults to the global --workspace value.",
+    ),
+    image: Path | None = typer.Option(None, "--image", help="Override input image path for the document."),
+) -> None:
+    state: AppState | None = ctx.obj if isinstance(ctx.obj, AppState) else None
+    workspace = source_workspace or (state.workspace if state is not None else Path("out/workspace"))
+    try:
+        from bubble.editor_models import add_workspace_case
+
+        document = add_workspace_case(project_dir=project, case_id=case_id, workspace=workspace, image_path=image)
+        typer.echo(f"editor document saved: {project / 'cases' / document['case_id'] / 'document.json'}")
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@editor_app.command("import-workspaces")
+def editor_import_workspaces(
+    project: Path = typer.Option(Path("out/editor_project"), "--project", help="Editor project directory."),
+    workspaces: list[Path] = typer.Argument(None, help="Existing text-bubble workspace directories."),
+    scan_dir: Path | None = typer.Option(
+        None,
+        "--scan-dir",
+        help="Scan the given directory for workspace subdirectories (containing reflow.json and scene.json) and import them all.",
+    ),
+) -> None:
+    from bubble.editor_models import add_workspace_case, find_workspaces
+
+    targets: list[Path] = list(workspaces or [])
+    if scan_dir is not None:
+        if not scan_dir.exists() or not scan_dir.is_dir():
+            typer.echo(f"--scan-dir directory not found: {scan_dir}", err=True)
+            raise typer.Exit(code=1)
+        targets.extend(find_workspaces(scan_dir))
+    if not targets:
+        typer.echo("no workspaces specified (pass paths and/or --scan-dir)", err=True)
+        raise typer.Exit(code=1)
+
+    seen_paths: set[Path] = set()
+    imported = 0
+    failed = 0
+    for workspace in targets:
+        resolved = workspace.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        case_id = workspace.name
+        try:
+            document = add_workspace_case(project_dir=project, case_id=case_id, workspace=workspace)
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            typer.echo(f"skipped {workspace}: {exc}", err=True)
+            continue
+        imported += 1
+        typer.echo(f"editor document saved: {project / 'cases' / document['case_id'] / 'document.json'}")
+    typer.echo(f"imported {imported} workspace(s), {failed} failed")
+    if imported == 0:
+        raise typer.Exit(code=1)
+
+
+@editor_app.command("serve")
+def editor_serve(
+    project: Path = typer.Option(Path("out/editor_project"), "--project", help="Editor project directory."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind."),
+    port: int = typer.Option(8765, "--port", help="Port to bind."),
+    import_workspace: Path | None = typer.Option(None, "--import-workspace", help="Import a single workspace before serving."),
+    case_id: str | None = typer.Option(None, "--case-id", help="Case id for --import-workspace."),
+    scan_dir: Path | None = typer.Option(
+        None,
+        "--scan-dir",
+        help="Scan the given directory for workspace subdirectories (containing reflow.json and scene.json) and import them all before serving.",
+    ),
+) -> None:
+    try:
+        from bubble.editor_models import add_workspace_case, find_workspaces
+
+        if import_workspace is not None:
+            resolved_case_id = case_id or import_workspace.name
+            add_workspace_case(project_dir=project, case_id=resolved_case_id, workspace=import_workspace)
+            typer.echo(f"imported workspace: {import_workspace} -> {resolved_case_id}")
+
+        if scan_dir is not None:
+            if not scan_dir.exists() or not scan_dir.is_dir():
+                typer.echo(f"--scan-dir directory not found: {scan_dir}", err=True)
+                raise typer.Exit(code=1)
+            workspaces = find_workspaces(scan_dir)
+            imported = 0
+            failed = 0
+            for workspace in workspaces:
+                try:
+                    add_workspace_case(project_dir=project, case_id=workspace.name, workspace=workspace)
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    typer.echo(f"skipped {workspace}: {exc}", err=True)
+                    continue
+                imported += 1
+            typer.echo(f"scan-dir imported {imported} workspace(s), {failed} failed")
+
+        from bubble.editor_server import run_editor_server
+
+        typer.echo(f"serving editor: http://{host}:{port}")
+        run_editor_server(project_dir=project, host=host, port=port)
+    except Exception as exc:  # noqa: BLE001
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
