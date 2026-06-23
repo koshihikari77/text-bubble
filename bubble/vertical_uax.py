@@ -24,15 +24,27 @@ TR_CHARS = frozenset(
     "ー―…‥〜～〰"
 )
 
-# Common upright punctuation in vertical writing.
+# Common upright punctuation in vertical writing (Unicode VO = Tu).
 TU_CHARS = frozenset(
     "、。，．・：；？！"
     "｡､･"
-    "♡♥❤❥❣"  # hearts (upright in vertical text)
 )
 
-# Characters that are "Tu" in Unicode but currently render incorrectly in resvg for our workload.
-TU_RESVG_OVERRIDE_CHARS = frozenset({"？", "！", "♡", "♥", "❤", "❥", "❣"})
+# Unicode VO = U だが、東アジア幅・CJK range heuristic では拾えない正立文字
+# （ハート類は Unicode VerticalOrientation 上 U に分類される）。
+U_FORCE_UPRIGHT_OVERRIDES = frozenset(
+    "♡♥❤❥❣"  # hearts
+)
+
+# 「path 経路で LTR shape + 正立配置」する文字集合。
+# resvg の <text> 描画では Tu でも誤って横倒しに描かれることがあり、
+# その対策として導入された経緯から旧名は TU_RESVG_OVERRIDE_CHARS だったが、
+# 現在は本番でも全 path 経路で描画しているため「resvg バグ回避」ではなく
+# 「明示的に manual_upright 経路へ送る」役割になっている。
+MANUAL_UPRIGHT_CHARS = frozenset({"？", "！"})
+
+# 旧名称（後方互換のため alias を残す）
+TU_RESVG_OVERRIDE_CHARS = MANUAL_UPRIGHT_CHARS
 
 
 @dataclass(frozen=True)
@@ -81,6 +93,8 @@ def vertical_orientation_of(cluster: str) -> VerticalOrientation:
         return "Tr"
     if base in TU_CHARS:
         return "Tu"
+    if base in U_FORCE_UPRIGHT_OVERRIDES:
+        return "U"
     if _is_ascii_cluster(cluster):
         return "R"
 
@@ -107,21 +121,28 @@ class HarfBuzzVerticalProbe:
 
     @lru_cache(maxsize=8192)
     def has_vertical_substitution(self, cluster: str) -> bool:
+        """フォントに縦書き専用 glyph があるかを LTR vs TTB shape の差で判定する。
+
+        direction="ttb" のとき HarfBuzz は vert / vrt2 等の縦組み feature を
+        自動適用するため、`{vert:1, vrt2:1}` を明示する必要はなく、また
+        OpenType 仕様上 vrt2 は vert の代替モデルなので同時指定は誤りである。
+        """
+
         hb = self._hb
 
-        def _glyph_ids(features: dict[str, int]) -> tuple[int, ...]:
+        def _glyph_ids(direction: str) -> tuple[int, ...]:
             buf = hb.Buffer()
             buf.add_str(cluster)
             buf.guess_segment_properties()
-            buf.direction = "ttb"
+            buf.direction = direction
             buf.script = "Jpan"
             buf.language = "ja"
-            hb.shape(self._font, buf, features)
+            hb.shape(self._font, buf, {})
             return tuple(info.codepoint for info in buf.glyph_infos)
 
-        ids_off = _glyph_ids({})
-        ids_vert = _glyph_ids({"vert": 1, "vrt2": 1})
-        return bool(ids_off) and ids_off != ids_vert
+        ids_h = _glyph_ids("ltr")
+        ids_v = _glyph_ids("ttb")
+        return bool(ids_h) and ids_h != ids_v
 
 
 def classify_cluster_action(
@@ -137,7 +158,7 @@ def classify_cluster_action(
         if probe and probe.has_vertical_substitution(cluster):
             return "safe"
         return "manual_sideways"
-    if orientation == "Tu" and resvg_tu_override and cluster in TU_RESVG_OVERRIDE_CHARS:
+    if orientation == "Tu" and resvg_tu_override and cluster in MANUAL_UPRIGHT_CHARS:
         return "manual_upright"
     return "safe"
 

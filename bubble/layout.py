@@ -1599,7 +1599,9 @@ def _measure_vertical_column(
                     text=decision.cluster,
                     font_size=font_size,
                     direction="ttb",
-                    features={"vert": 1, "vrt2": 1},
+                    # direction="ttb" 時に HarfBuzz が縦組み feature を
+                    # 自動適用する。vert / vrt2 同時指定はしない
+                    features=None,
                     rotate_90=False,
                 )
             elif decision.action == "manual_sideways":
