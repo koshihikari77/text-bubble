@@ -21,5 +21,8 @@ imgs/test*.png
 imgs/masks/
 imgs/masks2/
 
+# Local-only docs (planning / scratch)
+/docs/plan/
+
 # OS/editor noise
 .DS_Store
