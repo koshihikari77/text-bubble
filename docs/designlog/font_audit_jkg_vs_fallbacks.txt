@@ -1,0 +1,182 @@
+'created' timestamp seems very low; regarding as unix timestamp
+
+============================================================================
+FONT: /mnt/c/users/inada/obsidian/base/03_projects/text-bubble/assets/JKG-L_3.ttf
+============================================================================
+  name[1]: JK Gothic L
+  name[2]: Light
+  name[4]: JK Gothic L
+  name[6]: JK-Gothic-L
+  upem: 1024
+  vhea: True  vmtx: True
+  GSUB (vertical-related):
+    vert: 1
+  GPOS: absent
+  glyph audit:
+    char   cp       outline                    ttb-shape vs ltr-shape
+    'あ'    U+3042  glyph=uni3042              ltr=(1981,) ttb=(15253,)
+    'い'    U+3044  glyph=uni3044              ltr=(1983,) ttb=(15255,)
+    'う'    U+3046  glyph=uni3046              ltr=(1985,) ttb=(15257,)
+    '愛'    U+611B  glyph=uni611B              same=(5618,)
+    '、'    U+3001  glyph=uni3001              ltr=(1940,) ttb=(15230,)
+    '。'    U+3002  glyph=uni3002              ltr=(1941,) ttb=(15231,)
+    '「'    U+300C  glyph=uni300C              ltr=(1951,) ttb=(15240,)
+    '」'    U+300D  glyph=uni300D              ltr=(1952,) ttb=(15241,)
+    '（'    U+FF08  glyph=uniFF08              ltr=(14802,) ttb=(15471,)
+    '）'    U+FF09  glyph=uniFF09              ltr=(14803,) ttb=(15472,)
+    'ー'    U+30FC  glyph=uni30FC              ltr=(2159,) ttb=(15426,)
+    '…'    U+2026  glyph=ellipsis             ltr=(790,) ttb=(15096,)
+    '〜'    U+301C  EMPTY                      same=(1967,)
+    '？'    U+FF1F  glyph=uniFF1F              ltr=(14825,) ttb=(15494,)
+    '！'    U+FF01  glyph=uniFF01              ltr=(14795,) ttb=(15466,)
+    '♡'    U+2661  EMPTY                      same=(1764,)
+    '♥'    U+2665  EMPTY                      same=(1768,)
+    '❤'    U+2764  EMPTY                      same=(1866,)
+    '❥'    U+2765  EMPTY                      same=(1867,)
+    '❣'    U+2763  EMPTY                      same=(1865,)
+    '♪'    U+266A  glyph=musicalnote          ltr=(1773,) ttb=(15226,)
+    '♫'    U+266B  EMPTY                      same=(1774,)
+    '★'    U+2605  glyph=uni2605              ltr=(1678,) ttb=(15222,)
+    '☆'    U+2606  glyph=uni2606              ltr=(1679,) ttb=(15223,)
+    '●'    U+25CF  glyph=H18533               ltr=(1640,) ttb=(15220,)
+    '①'    U+2460  glyph=uni2460              ltr=(1304,) ttb=(15158,)
+    'H'    U+0048  glyph=H                    same=(42,)
+    'i'    U+0069  glyph=i                    same=(75,)
+    '1'    U+0031  glyph=one                  same=(19,)
+    '!'    U+0021  glyph=exclam               same=(3,)
+
+============================================================================
+FONT: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+============================================================================
+  name[1]: DejaVu Sans
+  name[2]: Book
+  name[4]: DejaVu Sans
+  name[6]: DejaVuSans
+  upem: 2048
+  vhea: False  vmtx: False
+  GSUB (other):  RQD(1), aalt(3), case(1), ccmp(4), dlig(3), fina(2), hlig(2), init(2), liga(2), locl(2), medi(2), rlig(2), salt(3)
+  GPOS (vertical-related):
+    kern: 2
+  GPOS (other): mark(4), mkmk(3)
+  glyph audit:
+    char   cp       outline                    ttb-shape vs ltr-shape
+    'あ'    U+3042  no-cmap                    same=(0,)
+    'い'    U+3044  no-cmap                    same=(0,)
+    'う'    U+3046  no-cmap                    same=(0,)
+    '愛'    U+611B  no-cmap                    same=(0,)
+    '、'    U+3001  no-cmap                    same=(0,)
+    '。'    U+3002  no-cmap                    same=(0,)
+    '「'    U+300C  no-cmap                    same=(0,)
+    '」'    U+300D  no-cmap                    same=(0,)
+    '（'    U+FF08  no-cmap                    same=(0,)
+    '）'    U+FF09  no-cmap                    same=(0,)
+    'ー'    U+30FC  no-cmap                    same=(0,)
+    '…'    U+2026  glyph=ellipsis             same=(2825,)
+    '〜'    U+301C  no-cmap                    same=(0,)
+    '？'    U+FF1F  no-cmap                    same=(0,)
+    '！'    U+FF01  no-cmap                    same=(0,)
+    '♡'    U+2661  glyph=uni2661              same=(3897,)
+    '♥'    U+2665  glyph=heart                same=(3901,)
+    '❤'    U+2764  glyph=uni2764              same=(4076,)
+    '❥'    U+2765  glyph=uni2765              same=(4077,)
+    '❣'    U+2763  glyph=uni2763              same=(4075,)
+    '♪'    U+266A  glyph=musicalnote          same=(3906,)
+    '♫'    U+266B  glyph=musicalnotedbl       same=(3907,)
+    '★'    U+2605  glyph=uni2605              same=(3805,)
+    '☆'    U+2606  glyph=uni2606              same=(3806,)
+    '●'    U+25CF  glyph=H18533               same=(3751,)
+    '①'    U+2460  glyph=uni2460              same=(3534,)
+    'H'    U+0048  glyph=H                    same=(43,)
+    'i'    U+0069  glyph=i                    same=(76,)
+    '1'    U+0031  glyph=one                  same=(20,)
+    '!'    U+0021  glyph=exclam               same=(4,)
+
+============================================================================
+FONT: /usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf
+============================================================================
+  name[1]: DejaVu Serif
+  name[2]: Book
+  name[4]: DejaVu Serif
+  name[6]: DejaVuSerif
+  upem: 2048
+  vhea: False  vmtx: False
+  GSUB (other): aalt(1), case(1), ccmp(1), dlig(1), liga(2), locl(2), salt(1), ssty(1)
+  GPOS (vertical-related):
+    kern: 1
+  GPOS (other): mark(1), mkmk(1)
+  glyph audit:
+    char   cp       outline                    ttb-shape vs ltr-shape
+    'あ'    U+3042  no-cmap                    same=(0,)
+    'い'    U+3044  no-cmap                    same=(0,)
+    'う'    U+3046  no-cmap                    same=(0,)
+    '愛'    U+611B  no-cmap                    same=(0,)
+    '、'    U+3001  no-cmap                    same=(0,)
+    '。'    U+3002  no-cmap                    same=(0,)
+    '「'    U+300C  no-cmap                    same=(0,)
+    '」'    U+300D  no-cmap                    same=(0,)
+    '（'    U+FF08  no-cmap                    same=(0,)
+    '）'    U+FF09  no-cmap                    same=(0,)
+    'ー'    U+30FC  no-cmap                    same=(0,)
+    '…'    U+2026  glyph=ellipsis             same=(1941,)
+    '〜'    U+301C  no-cmap                    same=(0,)
+    '？'    U+FF1F  no-cmap                    same=(0,)
+    '！'    U+FF01  no-cmap                    same=(0,)
+    '♡'    U+2661  glyph=uni2661              same=(2653,)
+    '♥'    U+2665  glyph=heart                same=(2657,)
+    '❤'    U+2764  no-cmap                    same=(0,)
+    '❥'    U+2765  no-cmap                    same=(0,)
+    '❣'    U+2763  no-cmap                    same=(0,)
+    '♪'    U+266A  glyph=musicalnote          same=(2661,)
+    '♫'    U+266B  glyph=musicalnotedbl       same=(2662,)
+    '★'    U+2605  no-cmap                    same=(0,)
+    '☆'    U+2606  no-cmap                    same=(0,)
+    '●'    U+25CF  glyph=H18533               same=(2588,)
+    '①'    U+2460  no-cmap                    same=(0,)
+    'H'    U+0048  glyph=H                    same=(43,)
+    'i'    U+0069  glyph=i                    same=(76,)
+    '1'    U+0031  glyph=one                  same=(20,)
+    '!'    U+0021  glyph=exclam               same=(4,)
+
+============================================================================
+FONT: /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf
+============================================================================
+  name[1]: Liberation Sans
+  name[2]: Regular
+  name[4]: Liberation Sans
+  name[6]: LiberationSans
+  upem: 2048
+  vhea: False  vmtx: False
+  GPOS (vertical-related):
+    kern: 1
+  glyph audit:
+    char   cp       outline                    ttb-shape vs ltr-shape
+    'あ'    U+3042  no-cmap                    same=(0,)
+    'い'    U+3044  no-cmap                    same=(0,)
+    'う'    U+3046  no-cmap                    same=(0,)
+    '愛'    U+611B  no-cmap                    same=(0,)
+    '、'    U+3001  no-cmap                    same=(0,)
+    '。'    U+3002  no-cmap                    same=(0,)
+    '「'    U+300C  no-cmap                    same=(0,)
+    '」'    U+300D  no-cmap                    same=(0,)
+    '（'    U+FF08  no-cmap                    same=(0,)
+    '）'    U+FF09  no-cmap                    same=(0,)
+    'ー'    U+30FC  no-cmap                    same=(0,)
+    '…'    U+2026  glyph=ellipsis             same=(536,)
+    '〜'    U+301C  no-cmap                    same=(0,)
+    '？'    U+FF1F  no-cmap                    same=(0,)
+    '！'    U+FF01  no-cmap                    same=(0,)
+    '♡'    U+2661  no-cmap                    same=(0,)
+    '♥'    U+2665  glyph=heart                same=(656,)
+    '❤'    U+2764  no-cmap                    same=(0,)
+    '❥'    U+2765  no-cmap                    same=(0,)
+    '❣'    U+2763  no-cmap                    same=(0,)
+    '♪'    U+266A  glyph=musicalnote          same=(658,)
+    '♫'    U+266B  glyph=musicalnotedbl       same=(659,)
+    '★'    U+2605  no-cmap                    same=(0,)
+    '☆'    U+2606  no-cmap                    same=(0,)
+    '●'    U+25CF  glyph=H18533               same=(645,)
+    '①'    U+2460  no-cmap                    same=(0,)
+    'H'    U+0048  glyph=H                    same=(43,)
+    'i'    U+0069  glyph=i                    same=(76,)
+    '1'    U+0031  glyph=one                  same=(20,)
+    '!'    U+0021  glyph=exclam               same=(4,)
