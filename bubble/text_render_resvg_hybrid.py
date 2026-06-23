@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from bubble.assets import css_font_literal, render_raw_svg_with_resvg
+from bubble.assets import css_font_literal, pick_fallback_font_paths, render_raw_svg_with_resvg
 from bubble.glyph_paths import HarfBuzzGlyphPathRenderer
 from bubble.models import BubblePlan, TEXT_COLOR
 from bubble.vertical_uax import classify_text_clusters
@@ -159,7 +159,10 @@ def build_resvg_hybrid_text_svg(
     path_renderer: HarfBuzzGlyphPathRenderer | None = None
     if font_path:
         try:
-            path_renderer = HarfBuzzGlyphPathRenderer(font_path)
+            path_renderer = HarfBuzzGlyphPathRenderer(
+                font_path,
+                fallback_font_paths=pick_fallback_font_paths(font_path),
+            )
         except Exception:  # noqa: BLE001
             path_renderer = None
 
@@ -190,7 +193,11 @@ def build_resvg_hybrid_text_svg(
                     direction="ttb",
                     axis="y",
                     font_size=text_layout["font_size"],
-                    features={"vert": 1, "vrt2": 1},
+                    # direction="ttb" 時に HarfBuzz が縦組み feature を
+                    # 自動適用するので、vert / vrt2 を明示指定しない。
+                    # （OpenType 仕様上 vrt2 は vert の代替モデルで
+                    # 併用するものではない）
+                    features=None,
                     fallback_px=float(grid_step),
                 )
                 step_sizes[safe_idx] = max(1.0, safe_advance + letter_spacing_px)
@@ -222,7 +229,10 @@ def build_resvg_hybrid_text_svg(
                         center_y=center_y,
                         font_size=text_layout["font_size"],
                         direction="ttb",
-                        features={"vert": 1, "vrt2": 1},
+                        # direction="ttb" の場合は HarfBuzz が縦組み feature を
+                        # 自動適用する。vert / vrt2 同時指定は OpenType 仕様上
+                        # 望ましくないので明示指定しない
+                        features=None,
                         rotate_90=False,
                     )
                 elif decision.action == "manual_sideways":

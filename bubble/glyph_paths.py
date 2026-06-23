@@ -15,7 +15,11 @@ class ShapedPath:
 
 
 class HarfBuzzGlyphPathRenderer:
-    def __init__(self, font_path: str) -> None:
+    def __init__(
+        self,
+        font_path: str,
+        fallback_font_paths: list[str] | None = None,
+    ) -> None:
         import uharfbuzz as hb
         from fontTools.pens.boundsPen import BoundsPen
         from fontTools.pens.svgPathPen import SVGPathPen
@@ -35,6 +39,7 @@ class HarfBuzzGlyphPathRenderer:
         tt_font = TTFont(str(font_file), lazy=True)
         glyph_set = tt_font.getGlyphSet()
 
+        self._font_path = str(font_file.resolve())
         self._hb = hb
         self._hb_font = hb_font
         self._tt_font = tt_font
@@ -43,6 +48,26 @@ class HarfBuzzGlyphPathRenderer:
         self._SVGPathPen = SVGPathPen
         self._BoundsPen = BoundsPen
         self._TransformPen = TransformPen
+
+        self._fallbacks: list[HarfBuzzGlyphPathRenderer] = []
+        if fallback_font_paths:
+            seen: set[str] = {self._font_path}
+            for path in fallback_font_paths:
+                resolved = str(Path(path).resolve())
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                try:
+                    self._fallbacks.append(
+                        HarfBuzzGlyphPathRenderer(path, fallback_font_paths=None)
+                    )
+                except Exception:  # noqa: BLE001
+                    # フォントが壊れていても primary は維持して継続
+                    continue
+
+    @property
+    def font_path(self) -> str:
+        return self._font_path
 
     def shape_path(
         self,
@@ -54,7 +79,19 @@ class HarfBuzzGlyphPathRenderer:
         features: dict[str, int] | None = None,
     ) -> ShapedPath:
         feature_key = tuple(sorted((features or {}).items()))
-        return self._shape_path_cached(text, direction, script, language, feature_key)
+        primary = self._shape_path_cached(text, direction, script, language, feature_key)
+        if primary.d and primary.bounds is not None:
+            return primary
+        for fallback in self._fallbacks:
+            try:
+                result = fallback._shape_path_cached(
+                    text, direction, script, language, feature_key
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if result.d and result.bounds is not None:
+                return result
+        return primary
 
     @lru_cache(maxsize=8192)
     def _shape_path_cached(

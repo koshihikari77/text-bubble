@@ -124,6 +124,29 @@ def pick_font_path(explicit: str | None) -> str | None:
     return None
 
 
+# Fonts consulted when the primary font lacks an outline for a cluster.
+# Order matters: tried in order until one produces a non-empty path.
+FALLBACK_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
+
+
+def pick_fallback_font_paths(primary_font_path: str | None = None) -> list[str]:
+    """Return existing fallback font paths, excluding the primary."""
+
+    resolved: list[str] = []
+    primary_real = os.path.realpath(primary_font_path) if primary_font_path else None
+    for candidate in FALLBACK_FONT_CANDIDATES:
+        if not os.path.exists(candidate):
+            continue
+        if primary_real is not None and os.path.realpath(candidate) == primary_real:
+            continue
+        resolved.append(candidate)
+    return resolved
+
+
 def encode_file_as_data_url(path: Path) -> str:
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     payload = base64.b64encode(path.read_bytes()).decode("ascii")

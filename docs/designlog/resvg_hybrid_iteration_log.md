@@ -39,7 +39,27 @@
 - `manual_sideways/manual_upright`: path 描画を維持。
 - `browser` レンダリング経路は保守用として残す（`--text-renderer browser`）。
 
+> **重要（2026-06 追記）**: 上記「path 描画」の経路は `font_path` が
+> 解決できているとき（つまり本番運用で常に成立する条件）に有効になる。
+> `HarfBuzzGlyphPathRenderer` が用意できないときに限り `<text>` 描画への
+> fallback が走る。要するに **本番では全 cluster が `<path>` に変換され、
+> resvg は文字組版エンジンではなく純粋な path ラスタライザとしてだけ
+> 使われている**。resvg の `writing-mode` / `text-orientation` の解釈差は
+> 本番出力に影響しない。
+
 ## 参照出力
 - 最終版: `out/poc_check/hybrid_cli_final.png`
 - 最終比較: `out/poc_check/hybrid_misalignment/hybrid_text_final_cmp.png`
 - 採用基準比較: `out/poc_check/hybrid_misalignment/hybrid_text_safe_variable_norm_cmp.png`
+
+## 2026-06 の追加対処
+- JK Gothic L には `♡♥❤❥❣ ♫ 〜` の outline が無いため、`manual_upright` /
+  `safe` でも空 path が返り画面に何も描かれていなかった
+- `HarfBuzzGlyphPathRenderer` に **font fallback chain** を追加し、primary で
+  outline 取得失敗時に DejaVu Sans 等で再 shape する経路を導入
+- 同時に: ハート類を Unicode VO 上の `U` 扱いに修正、`TU_RESVG_OVERRIDE_CHARS`
+  を `MANUAL_UPRIGHT_CHARS` にリネーム、`features={vert:1, vrt2:1}` の明示
+  指定を撤廃（HarfBuzz の TTB direction 自動適用に任せる）
+- 詳細な計画と GPT Pro レビューは `docs/plan/vertical_rendering_review_202606.md`
+- 比較用 golden 画像: `docs/designlog/golden_vertical/`
+- フォント能力監査: `docs/designlog/font_audit_jkg_vs_fallbacks.txt`
